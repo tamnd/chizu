@@ -2,7 +2,9 @@ package chain
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -94,6 +96,96 @@ func TestLiveContention(t *testing.T) {
 		if len(b.Records) != 1 {
 			t.Fatalf("batch carries %d records", len(b.Records))
 		}
+	}
+}
+
+// TestLiveCheckpointTrim runs the full checkpoint cycle on the real bucket:
+// two contending checkpointing writers, CAS-raced checkpoint objects, a trim
+// behind the second-newest checkpoint, and a boot through the newest one.
+func TestLiveCheckpointTrim(t *testing.T) {
+	c, ctx, prefix := liveBucket(t)
+	const interval = 8
+
+	newCp := func(w uint64) (*Chain, *Checkpointer) {
+		cp := NewCheckpointer()
+		cp.Interval = interval
+		ch, err := Open(ctx, c, Options{Prefix: prefix, Writer: w, Incarnation: 1, Observe: cp.Observe})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ch, cp
+	}
+	a, cpA := newCp(1)
+	b, cpB := newCp(2)
+
+	var newest uint64
+	for i := range 20 {
+		ch, cp := a, cpA
+		if i%2 == 1 {
+			ch, cp = b, cpB
+		}
+		if err := ch.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ch.Append(ctx, mixRecords(i)); err != nil {
+			t.Fatal(err)
+		}
+		seqs, err := cp.Flush(ctx, c, prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range seqs {
+			if _, err := ch.Append(ctx, []Record{&Ckpt{Seq: s}}); err != nil {
+				t.Fatal(err)
+			}
+			newest = max(newest, s)
+		}
+	}
+	// Both stragglers flush whatever boundaries they still hold; the raced
+	// creates must resolve as success.
+	for _, cp := range []*Checkpointer{cpA, cpB} {
+		if _, err := cp.Flush(ctx, c, prefix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if newest < 2*interval-1 {
+		t.Fatalf("only checkpointed to %d", newest)
+	}
+
+	if err := TrimBehind(ctx, c, prefix, newest, interval); err != nil {
+		t.Fatal(err)
+	}
+	second := newest - interval
+	if _, _, err := c.Get(ctx, a.key(second)); !errors.Is(err, s3c.ErrNotFound) {
+		t.Fatalf("slot %d survived the trim: %v", second, err)
+	}
+	if _, _, err := c.Get(ctx, a.key(second+1)); err != nil {
+		t.Fatalf("trim overreached into slot %d: %v", second+1, err)
+	}
+
+	data, _, err := c.Get(ctx, ckptKey(prefix, newest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, seq, _, err := DecodeCheckpoint(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := NewCheckpointer()
+	cp.Interval = interval
+	cp.State = st
+	boot, err := Open(ctx, c, Options{Prefix: prefix, Writer: 9, Incarnation: 1, From: seq + 1, Observe: cp.Observe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if boot.Pos() != a.Pos() {
+		t.Fatalf("boot reached %d, tail is %d", boot.Pos(), a.Pos())
+	}
+	if !reflect.DeepEqual(cpA.State.EncodeCheckpoint(9, 999), cp.State.EncodeCheckpoint(9, 999)) {
+		t.Fatal("boot state diverged from the live fold")
 	}
 }
 

@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,6 +74,32 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.objects[key] = body
 		s.mu.Unlock()
 		w.Header().Set("ETag", fakeETag(body))
+	case http.MethodPost:
+		// DeleteObjects: POST ?delete with an XML key list.
+		if _, ok := r.URL.Query()["delete"]; !ok {
+			w.WriteHeader(http.StatusNotImplemented)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var dr struct {
+			Objects []struct {
+				Key string `xml:"Key"`
+			} `xml:"Object"`
+		}
+		if err := xml.Unmarshal(body, &dr); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		for _, o := range dr.Objects {
+			delete(s.objects, o.Key)
+		}
+		s.mu.Unlock()
+		_, _ = w.Write([]byte(`<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>`))
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
 	}
