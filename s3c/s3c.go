@@ -18,6 +18,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,9 +55,16 @@ func FromEnv() Config {
 
 // Client is safe for concurrent use.
 type Client struct {
-	cfg  Config
-	base *url.URL
+	cfg      Config
+	base     *url.URL
+	requests atomic.Uint64
 }
+
+// Requests returns the number of HTTP requests this client has sent,
+// counting every retry attempt. The CG2 gate (doc 09) reads it around
+// the query path and fails on any nonzero delta: serving must never
+// touch the bucket.
+func (c *Client) Requests() uint64 { return c.requests.Load() }
 
 // Info is object metadata from a HEAD.
 type Info struct {
@@ -164,6 +172,7 @@ func (c *Client) do(ctx context.Context, r req) (*resp, error) {
 		}
 		sign(hr, c.cfg.AccessKey, c.cfg.SecretKey, c.cfg.Region, "s3", payloadHash, time.Now())
 
+		c.requests.Add(1)
 		res, err := c.cfg.HTTPClient.Do(hr)
 		if err != nil {
 			if ctx.Err() != nil && !r.idempotent {
