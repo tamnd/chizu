@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math/bits"
 )
 
 const (
@@ -157,4 +158,42 @@ func parseFileHeader(data []byte) (FileHeader, error) {
 // alignUp rounds n up to the next band boundary.
 func alignUp(n uint64) uint64 {
 	return (n + align - 1) &^ uint64(align-1)
+}
+
+// maxU40 bounds the 5-byte offsets the dictionary and skips bands use;
+// 1 TB of band is far past the reference shard's largest band.
+const maxU40 = 1<<40 - 1
+
+func appendU40(dst []byte, v uint64) []byte {
+	return append(dst, byte(v), byte(v>>8), byte(v>>16), byte(v>>24), byte(v>>32))
+}
+
+func u40(b []byte) uint64 {
+	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 | uint64(b[4])<<32
+}
+
+func appendU48(dst []byte, v uint64) []byte {
+	return append(dst, byte(v), byte(v>>8), byte(v>>16), byte(v>>24), byte(v>>32), byte(v>>40))
+}
+
+func u48(b []byte) uint64 {
+	return u40(b) | uint64(b[5])<<40
+}
+
+// appendUvarint and uvarint mirror the doc 04 varint law: unsigned
+// LEB128, minimal encoding demanded at decode so accepted bytes
+// re-encode to exactly the input.
+func appendUvarint(dst []byte, v uint64) []byte {
+	return binary.AppendUvarint(dst, v)
+}
+
+func uvarint(data []byte) (uint64, int, error) {
+	v, n := binary.Uvarint(data)
+	if n <= 0 {
+		return 0, 0, errors.New("hotfmt: bad varint")
+	}
+	if n != max(1, (bits.Len64(v)+6)/7) {
+		return 0, 0, errors.New("hotfmt: non-minimal varint")
+	}
+	return v, n, nil
 }
