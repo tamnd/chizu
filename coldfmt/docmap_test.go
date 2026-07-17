@@ -138,7 +138,7 @@ func TestDocmapFlipSweep(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if !(i >= 24 && i < 32) {
+		if i < 24 || i >= 32 {
 			t.Fatalf("flip at %d accepted silently", i)
 		}
 		if !reflect.DeepEqual(got, want) {

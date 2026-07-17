@@ -118,7 +118,7 @@ func TestFrontierFlipSweep(t *testing.T) {
 			}
 		}
 		c.Close()
-		if clean && !(i >= 24 && i < 32) {
+		if clean && (i < 24 || i >= 32) {
 			t.Fatalf("flip at %d accepted silently", i)
 		}
 	}
