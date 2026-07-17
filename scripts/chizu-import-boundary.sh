@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Pins the import edges from spec 2107 doc 02 section 2:
 #   - no internal/ directories anywhere
-#   - coldfmt, hotfmt, and wire import stdlib only
+#   - coldfmt and hotfmt import stdlib plus klauspost/compress (doc 04
+#     mandates zstd with trained dictionaries); wire imports stdlib only
 #   - s3c imports stdlib only; chain imports only s3c and wire
 #   - nothing imports a plane package (crawl, build, serve, rootsrv) except cmd/chizu
 #   - no AWS SDK anywhere; s3c is the only S3 client
@@ -24,10 +25,11 @@ if grep -rln --include='*.go' 'aws-sdk-go' . >/dev/null 2>&1; then
   fail=1
 fi
 
-# check <pkg> <comma-separated allowed module-internal imports>
+# check <pkg> <allowed module-internal imports> <allowed external prefixes>
 check() {
   pkg=$1
   allowed=$2
+  extern=$3
   [ -d "$pkg" ] || return 0
   imports=$(go list -f '{{join .Imports "\n"}}' "./$pkg" | grep "^$module/" | sed "s|^$module/||" || true)
   for imp in $imports; do
@@ -39,13 +41,24 @@ check() {
         ;;
     esac
   done
+  # External deps: anything whose first path element has a dot is not stdlib.
+  external=$(go list -f '{{join .Imports "\n"}}' "./$pkg" | grep -v "^$module" | awk -F/ '$1 ~ /\./' || true)
+  for imp in $external; do
+    case "$imp" in
+      ${extern:-__none__}) ;;
+      *)
+        echo "$pkg imports external $imp (allowed: ${extern:-nothing})"
+        fail=1
+        ;;
+    esac
+  done
 }
 
-check coldfmt ""
-check hotfmt ""
-check wire ""
-check s3c ""
-check chain "s3c,wire"
+check coldfmt "" "github.com/klauspost/compress/*"
+check hotfmt "" "github.com/klauspost/compress/*"
+check wire "" ""
+check s3c "" ""
+check chain "s3c,wire" ""
 
 for plane in crawl build serve rootsrv; do
   [ -d "$plane" ] || continue

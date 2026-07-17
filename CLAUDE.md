@@ -31,7 +31,7 @@ Goals on this hardware: crawl 500-1000 pages/s per node (CR1 gates at 500), and 
 ## Code rules
 
 - Flat packages, no internal/ anywhere; scripts/chizu-import-boundary.sh pins the edges and runs in CI.
-- coldfmt, hotfmt, and wire import stdlib only; chain imports only s3c; nothing imports a plane except cmd/chizu; no AWS SDK.
+- coldfmt and hotfmt import stdlib plus klauspost/compress (doc 04 mandates zstd with trained dictionaries); wire and s3c import stdlib only; chain imports only s3c; nothing imports a plane except cmd/chizu; no AWS SDK.
 - Human-readable Go that leans on the stdlib; gofmt -s clean; race detector on in CI.
 - Every parser that touches bytes at rest or in flight gets fuzz coverage (format-fuzz, wire-fuzz).
 - Tests that need a bucket read CHIZU_S3_ENDPOINT and skip when it is unset; CI's s3-suite lane provides MinIO.
