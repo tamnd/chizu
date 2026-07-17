@@ -55,9 +55,11 @@ func newBlockCodec(dict []byte) (*blockCodec, error) {
 }
 
 func (c *blockCodec) close() {
-	c.encPlain.Close()
+	// The encoders only ever see EncodeAll, so nothing is buffered and
+	// Close cannot report anything actionable.
+	_ = c.encPlain.Close()
 	if c.encDict != nil {
-		c.encDict.Close()
+		_ = c.encDict.Close()
 	}
 	c.dec.Close()
 }
