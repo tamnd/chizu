@@ -35,7 +35,7 @@ func TestRetryOn5xxThenSucceed(t *testing.T) {
 			return
 		}
 		w.Header().Set("ETag", `"abc"`)
-		w.Write([]byte("payload"))
+		_, _ = w.Write([]byte("payload"))
 	}))
 	data, etag, err := c.Get(context.Background(), "k")
 	if err != nil {
@@ -102,7 +102,7 @@ func TestWriteTransportFailureIsAmbiguous(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		conn.Close()
+		_ = conn.Close()
 	}))
 	_, err := c.Put(context.Background(), "k", []byte("v"))
 	var amb *AmbiguousError
