@@ -32,6 +32,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chizu:", err)
 			os.Exit(1)
 		}
+	case "dev":
+		if err := dev(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chizu:", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "chizu: unknown command %q\n", os.Args[1])
 		os.Exit(2)
@@ -40,7 +45,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: chizu <command>")
-	fmt.Fprintln(os.Stderr, "commands: version, admin create")
+	fmt.Fprintln(os.Stderr, "commands: version, admin create, dev")
 	fmt.Fprintln(os.Stderr, "more arrive milestone by milestone")
 }
 
