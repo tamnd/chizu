@@ -14,6 +14,7 @@ import (
 // Doc 04 section 2: every chizu object opens with the same 32-byte header.
 const (
 	magic       = "tamndchizu fmt01"
+	formatRoot  = 0x7A01
 	formatBatch = 0x7A02
 	fversion    = 1
 	headerSize  = 32
@@ -22,6 +23,41 @@ const (
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
 func crc(b []byte) uint32 { return crc32.Checksum(b, castagnoli) }
+
+// appendHeader writes the 32-byte common header.
+func appendHeader(dst []byte, format uint16, writer uint64) []byte {
+	dst = append(dst, magic...)
+	dst = binary.LittleEndian.AppendUint16(dst, format)
+	dst = binary.LittleEndian.AppendUint16(dst, fversion)
+	dst = binary.LittleEndian.AppendUint32(dst, crc(dst[len(dst)-20:]))
+	return binary.LittleEndian.AppendUint64(dst, writer)
+}
+
+// openObject verifies the common header and the trailing body crc, both of
+// which every chain-plane object carries, and hands back the writer and the
+// payload between them.
+func openObject(data []byte, format uint16) (writer uint64, payload []byte, err error) {
+	if len(data) < headerSize+4 {
+		return 0, nil, errors.New("chain: object too short")
+	}
+	if string(data[:16]) != magic {
+		return 0, nil, errors.New("chain: bad magic")
+	}
+	if f := binary.LittleEndian.Uint16(data[16:]); f != format {
+		return 0, nil, fmt.Errorf("chain: format 0x%04X, want 0x%04X", f, format)
+	}
+	if v := binary.LittleEndian.Uint16(data[18:]); v == 0 || v > fversion {
+		return 0, nil, fmt.Errorf("chain: unknown fversion %d", v)
+	}
+	if binary.LittleEndian.Uint32(data[20:]) != crc(data[:20]) {
+		return 0, nil, errors.New("chain: header crc mismatch")
+	}
+	payload = data[headerSize : len(data)-4]
+	if binary.LittleEndian.Uint32(data[len(data)-4:]) != crc(payload) {
+		return 0, nil, errors.New("chain: body crc mismatch")
+	}
+	return binary.LittleEndian.Uint64(data[24:]), payload, nil
+}
 
 // Batch is one chain slot: everything a writer had pending, appended in one
 // CAS-create. The sequence number lives in the object key, not in the bytes,
@@ -40,13 +76,7 @@ type Batch struct {
 // incarnation, nrecords, records (rlen u16, kind u8, body), crc over
 // everything after the header.
 func (b *Batch) Encode() ([]byte, error) {
-	out := make([]byte, 0, 128)
-	out = append(out, magic...)
-	out = binary.LittleEndian.AppendUint16(out, formatBatch)
-	out = binary.LittleEndian.AppendUint16(out, fversion)
-	out = binary.LittleEndian.AppendUint32(out, crc(out[:20]))
-	out = binary.LittleEndian.AppendUint64(out, b.Writer)
-
+	out := appendHeader(make([]byte, 0, 128), formatBatch, b.Writer)
 	out = binary.LittleEndian.AppendUint64(out, b.BatchID)
 	out = binary.LittleEndian.AppendUint32(out, b.Incarnation)
 	if len(b.Records) > 0xFFFF {
@@ -70,29 +100,13 @@ func (b *Batch) Encode() ([]byte, error) {
 // version, crc, length, or trailing-byte problem is an error, never a partial
 // result: a slot either decodes completely or does not exist to the caller.
 func DecodeBatch(data []byte) (*Batch, error) {
-	if len(data) < headerSize+8+4+2+4 {
-		return nil, errors.New("chain: batch too short")
+	writer, payload, err := openObject(data, formatBatch)
+	if err != nil {
+		return nil, err
 	}
-	if string(data[:16]) != magic {
-		return nil, errors.New("chain: bad magic")
-	}
-	if f := binary.LittleEndian.Uint16(data[16:]); f != formatBatch {
-		return nil, fmt.Errorf("chain: format 0x%04X is not a chain batch", f)
-	}
-	if v := binary.LittleEndian.Uint16(data[18:]); v == 0 || v > fversion {
-		return nil, fmt.Errorf("chain: unknown fversion %d", v)
-	}
-	if binary.LittleEndian.Uint32(data[20:]) != crc(data[:20]) {
-		return nil, errors.New("chain: header crc mismatch")
-	}
-	payload := data[headerSize : len(data)-4]
-	if binary.LittleEndian.Uint32(data[len(data)-4:]) != crc(payload) {
-		return nil, errors.New("chain: body crc mismatch")
-	}
-
 	r := &reader{b: payload}
 	b := &Batch{
-		Writer:      binary.LittleEndian.Uint64(data[24:]),
+		Writer:      writer,
 		BatchID:     r.u64(),
 		Incarnation: r.u32(),
 	}

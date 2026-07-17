@@ -10,11 +10,10 @@ import (
 	"github.com/tamnd/chizu/s3c"
 )
 
-// TestLiveContention runs two appenders against a real bucket and checks the
-// one property everything else stands on: the chain is a dense total order
-// where every staged batch lands exactly once, in per-writer order, no matter
-// who wins each slot.
-func TestLiveContention(t *testing.T) {
+// liveBucket returns a client against the environment's bucket plus a
+// prefix unique to this run, or skips.
+func liveBucket(t *testing.T) (*s3c.Client, context.Context, string) {
+	t.Helper()
 	cfg := s3c.FromEnv()
 	if cfg.Endpoint == "" {
 		t.Skip("CHIZU_S3_ENDPOINT unset; the s3-suite lane provides MinIO")
@@ -27,11 +26,19 @@ func TestLiveContention(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 	if err := c.CreateBucket(ctx); err != nil {
 		t.Fatal(err)
 	}
-	prefix := fmt.Sprintf("test/chain-%d/", time.Now().UnixNano())
+	return c, ctx, fmt.Sprintf("test/%s-%d/", t.Name(), time.Now().UnixNano())
+}
+
+// TestLiveContention runs two appenders against a real bucket and checks the
+// one property everything else stands on: the chain is a dense total order
+// where every staged batch lands exactly once, in per-writer order, no matter
+// who wins each slot.
+func TestLiveContention(t *testing.T) {
+	c, ctx, prefix := liveBucket(t)
 
 	const writers = 2
 	const perWriter = 20
@@ -87,5 +94,41 @@ func TestLiveContention(t *testing.T) {
 		if len(b.Records) != 1 {
 			t.Fatalf("batch carries %d records", len(b.Records))
 		}
+	}
+}
+
+// TestLiveRoot runs the root lifecycle on the real bucket over both
+// discovery paths: create, load, forward-only advance, racing handles.
+func TestLiveRoot(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		seq  bool
+	}{{"cas", false}, {"seq", true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			c, ctx, prefix := liveBucket(t)
+			a := NewRootStore(c, prefix, 1, mode.seq)
+			root := &Root{DBID: 7, CreatedMS: 1, P: 4096, ShardSize: 6000000, Frozen: []byte("law=1")}
+			if err := a.Create(ctx, root); err != nil {
+				t.Fatal(err)
+			}
+			b := NewRootStore(c, prefix, 2, mode.seq)
+			if r, err := b.Load(ctx); err != nil || r.CkptSeq != 0 || r.DBID != 7 {
+				t.Fatalf("load: %+v %v", r, err)
+			}
+			if r, err := a.Advance(ctx, 4096); err != nil || r.CkptSeq != 4096 {
+				t.Fatalf("advance: %+v %v", r, err)
+			}
+			// b's view is stale; its lower advance must converge on 4096.
+			if r, err := b.Advance(ctx, 100); err != nil || r.CkptSeq != 4096 {
+				t.Fatalf("stale advance: %+v %v", r, err)
+			}
+			if r, err := b.Advance(ctx, 8192); err != nil || r.CkptSeq != 8192 {
+				t.Fatalf("second advance: %+v %v", r, err)
+			}
+			final, err := a.Load(ctx)
+			if err != nil || final.CkptSeq != 8192 || final.Writer != 2 || string(final.Frozen) != "law=1" {
+				t.Fatalf("final: %+v %v", final, err)
+			}
+		})
 	}
 }
