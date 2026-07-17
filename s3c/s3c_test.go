@@ -81,7 +81,7 @@ func TestLiveRange(t *testing.T) {
 	if _, err := c.Put(ctx, key, blob); err != nil {
 		t.Fatal(err)
 	}
-	defer c.Delete(ctx, key)
+	defer func() { _ = c.Delete(ctx, key) }()
 	got, err := c.GetRange(ctx, key, 10, 16)
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestLiveRange(t *testing.T) {
 func TestLiveCreateExclusive(t *testing.T) {
 	c, ctx := liveClient(t)
 	key := testKey(t, "obj")
-	defer c.Delete(ctx, key)
+	defer func() { _ = c.Delete(ctx, key) }()
 	if _, err := c.CreateExclusive(ctx, key, []byte("winner")); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestLiveCreateExclusive(t *testing.T) {
 func TestLiveReplaceIfMatch(t *testing.T) {
 	c, ctx := liveClient(t)
 	key := testKey(t, "obj")
-	defer c.Delete(ctx, key)
+	defer func() { _ = c.Delete(ctx, key) }()
 	etag1, err := c.Put(ctx, key, []byte("v1"))
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func patternBytes(size int64) []byte {
 func TestLiveMultipartUpload(t *testing.T) {
 	c, ctx := liveClient(t)
 	key := testKey(t, "big")
-	defer c.Delete(ctx, key)
+	defer func() { _ = c.Delete(ctx, key) }()
 
 	const size = 11 << 20 // three parts at 5 MiB: 5+5+1
 	want := patternBytes(size)
@@ -199,7 +199,7 @@ func TestLiveMultipartUpload(t *testing.T) {
 func TestLiveMultipartExclusive(t *testing.T) {
 	c, ctx := liveClient(t)
 	key := testKey(t, "big")
-	defer c.Delete(ctx, key)
+	defer func() { _ = c.Delete(ctx, key) }()
 
 	blob := patternBytes(6 << 20)
 	if _, err := c.Upload(ctx, key, bytes.NewReader(blob), 5<<20, 2, true); err != nil {

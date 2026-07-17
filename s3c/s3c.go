@@ -179,7 +179,7 @@ func (c *Client) do(ctx context.Context, r req) (*resp, error) {
 			return nil, &AmbiguousError{Op: r.method, Key: r.key, Err: err}
 		}
 		body, rerr := io.ReadAll(res.Body)
-		res.Body.Close()
+		_ = res.Body.Close()
 		if rerr != nil {
 			if r.idempotent {
 				last = rerr
