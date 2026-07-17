@@ -172,8 +172,9 @@ func TestLostRaceAdvancesForFree(t *testing.T) {
 	if seq != 1 {
 		t.Fatalf("loser should land at slot 1, got %d", seq)
 	}
-	if len(got) != 1 || got[0].writer != 9 || got[0].seq != 0 {
-		t.Fatalf("loser did not observe the winner: %+v", got)
+	// Observe saw the winner's slot 0 and then a's own landed batch at 1.
+	if len(got) != 2 || got[0].writer != 9 || got[0].seq != 0 || got[1].writer != 7 || got[1].seq != 1 {
+		t.Fatalf("loser did not observe winner then self: %+v", got)
 	}
 }
 

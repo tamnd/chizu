@@ -19,10 +19,11 @@ type Options struct {
 	// From is the first sequence to probe on open; boot passes the slot after
 	// the newest checkpoint, a fresh database passes 0.
 	From uint64
-	// Observe, when set, sees every batch this handle reads in sequence
-	// order: catch-up on open, winners of lost races, ambiguous slots that
-	// went to someone else, and everything Poll finds. This is how a node's
-	// view advances for free while it appends.
+	// Observe, when set, sees every batch that passes this handle's
+	// position, in sequence order: catch-up on open, winners of lost races,
+	// ambiguous slots that went to someone else, everything Poll finds, and
+	// the handle's own landed appends. A fold wired to Observe is therefore
+	// complete; nothing needs to self-apply.
 	Observe func(seq uint64, b *Batch)
 }
 
@@ -97,7 +98,7 @@ func (c *Chain) Append(ctx context.Context, records []Record) (uint64, error) {
 		seq := c.next
 		_, err := c.s3.CreateExclusive(ctx, c.key(seq), data)
 		if err == nil {
-			c.next++
+			c.deliver(b)
 			return seq, nil
 		}
 		if errors.Is(err, s3c.ErrPrecondition) {
@@ -154,7 +155,7 @@ func (c *Chain) resolve(ctx context.Context, seq uint64, ours *Batch) (bool, err
 		return false, fmt.Errorf("chain: slot %d: %w", seq, err)
 	}
 	if b.Writer == ours.Writer && b.Incarnation == ours.Incarnation && b.BatchID == ours.BatchID {
-		c.next++
+		c.deliver(b)
 		return true, nil
 	}
 	c.deliver(b)
