@@ -2,6 +2,7 @@ package chain
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,7 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+		w.Header().Set("ETag", fakeETag(body))
 		_, _ = w.Write(body)
 	case http.MethodPut:
 		s.puts.Add(1)
@@ -45,7 +47,13 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
-		if _, exists := s.objects[key]; exists && r.Header.Get("If-None-Match") == "*" {
+		cur, exists := s.objects[key]
+		if exists && r.Header.Get("If-None-Match") == "*" {
+			s.mu.Unlock()
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+		if im := r.Header.Get("If-Match"); im != "" && (!exists || im != fakeETag(cur)) {
 			s.mu.Unlock()
 			w.WriteHeader(http.StatusPreconditionFailed)
 			return
@@ -64,10 +72,14 @@ func (s *store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.objects[key] = body
 		s.mu.Unlock()
-		w.Header().Set("ETag", `"fake"`)
+		w.Header().Set("ETag", fakeETag(body))
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
 	}
+}
+
+func fakeETag(body []byte) string {
+	return fmt.Sprintf("%q", fmt.Sprintf("%08x", crc(body)))
 }
 
 func (s *store) count() int {
