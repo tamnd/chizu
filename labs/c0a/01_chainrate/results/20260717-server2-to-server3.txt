@@ -1,0 +1,61 @@
+  [c01] appends=60 rereads=0 failures=0
+  [c02] appends=60 rereads=0 failures=0
+  [c03] appends=60 rereads=0 failures=0
+RESULT label=server2-to-server3-design contenders=3 records=8 pace=1.00 dur=60.7s appends=180 appends_per_s=3.0 records_per_s=23.7 rereads=0 reread_rate=0.0% failures=0 p50=10ms p95=24ms p99=51ms max=88ms
+  [c01] appends=2455 rereads=0 failures=0
+RESULT label=server2-to-server3-sat contenders=1 records=1 pace=0.00 dur=30.0s appends=2455 appends_per_s=81.8 records_per_s=81.8 rereads=0 reread_rate=0.0% failures=0 p50=11ms p95=21ms p99=34ms max=222ms
+  [c01] appends=2531 rereads=0 failures=0
+RESULT label=server2-to-server3-sat contenders=1 records=8 pace=0.00 dur=30.0s appends=2531 appends_per_s=84.4 records_per_s=674.9 rereads=0 reread_rate=0.0% failures=0 p50=11ms p95=20ms p99=32ms max=61ms
+  [c01] appends=2477 rereads=0 failures=0
+RESULT label=server2-to-server3-sat contenders=1 records=32 pace=0.00 dur=30.0s appends=2477 appends_per_s=82.6 records_per_s=2641.6 rereads=0 reread_rate=0.0% failures=0 p50=11ms p95=19ms p99=29ms max=219ms
+  [c01] appends=175 rereads=2161 failures=0
+  [c02] appends=2161 rereads=0 failures=0
+RESULT label=server2-to-server3-sat contenders=2 records=1 pace=0.00 dur=30.0s appends=2336 appends_per_s=77.9 records_per_s=77.9 rereads=2161 reread_rate=92.5% failures=0 p50=11ms p95=24ms p99=40ms max=28.085s
+  [c01] appends=801 rereads=106 failures=0
+  [c02] appends=1830 rereads=801 failures=0
+RESULT label=server2-to-server3-sat contenders=2 records=8 pace=0.00 dur=30.0s appends=2631 appends_per_s=87.7 records_per_s=701.6 rereads=907 reread_rate=34.5% failures=0 p50=10ms p95=20ms p99=31ms max=5.06s
+  [c01] appends=138 rereads=2185 failures=0
+  [c02] appends=2185 rereads=0 failures=0
+RESULT label=server2-to-server3-sat contenders=2 records=32 pace=0.00 dur=30.0s appends=2323 appends_per_s=77.4 records_per_s=2477.7 rereads=2185 reread_rate=94.1% failures=0 p50=11ms p95=23ms p99=34ms max=28.489s
+  [c01] appends=0 rereads=0 failures=0
+  [c02] appends=1360 rereads=1007 failures=0
+  [c03] appends=213 rereads=1077 failures=0
+  [c04] appends=794 rereads=1390 failures=0
+RESULT label=server2-to-server3-sat contenders=4 records=1 pace=0.00 dur=30.0s appends=2367 appends_per_s=78.9 records_per_s=78.9 rereads=3474 reread_rate=146.8% failures=0 p50=11ms p95=25ms p99=49ms max=14.377s
+  [c01] appends=990 rereads=1264 failures=0
+  [c02] appends=265 rereads=1347 failures=0
+  [c03] appends=756 rereads=818 failures=0
+  [c04] appends=243 rereads=929 failures=0
+RESULT label=server2-to-server3-sat contenders=4 records=8 pace=0.00 dur=30.0s appends=2254 appends_per_s=75.1 records_per_s=601.0 rereads=4358 reread_rate=193.3% failures=0 p50=12ms p95=25ms p99=58ms max=13.612s
+  [c01] appends=371 rereads=1895 failures=0
+  [c02] appends=419 rereads=1759 failures=0
+  [c03] appends=585 rereads=794 failures=0
+  [c04] appends=891 rereads=1253 failures=0
+RESULT label=server2-to-server3-sat contenders=4 records=32 pace=0.00 dur=30.0s appends=2266 appends_per_s=75.5 records_per_s=2416.6 rereads=5701 reread_rate=251.6% failures=0 p50=11ms p95=25ms p99=86ms max=15.101s
+  [c01] appends=167 rereads=930 failures=0
+  [c02] appends=87 rereads=700 failures=0
+  [c03] appends=216 rereads=1061 failures=0
+  [c04] appends=216 rereads=558 failures=0
+  [c05] appends=360 rereads=308 failures=0
+  [c06] appends=35 rereads=109 failures=0
+  [c07] appends=91 rereads=1285 failures=0
+  [c08] appends=253 rereads=1172 failures=0
+RESULT label=server2-to-server3-sat contenders=8 records=1 pace=0.00 dur=30.0s appends=1425 appends_per_s=47.5 records_per_s=47.5 rereads=6123 reread_rate=429.7% failures=0 p50=16ms p95=57ms p99=2.349s max=27.032s
+  [c01] appends=696 rereads=800 failures=0
+  [c02] appends=137 rereads=561 failures=0
+  [c03] appends=64 rereads=0 failures=0
+  [c04] appends=101 rereads=977 failures=0
+  [c05] appends=20 rereads=706 failures=0
+  [c06] appends=244 rereads=706 failures=0
+  [c07] appends=87 rereads=747 failures=0
+  [c08] appends=147 rereads=410 failures=0
+RESULT label=server2-to-server3-sat contenders=8 records=8 pace=0.00 dur=30.0s appends=1496 appends_per_s=49.9 records_per_s=398.9 rereads=4907 reread_rate=328.0% failures=0 p50=16ms p95=52ms p99=1.653s max=15.602s
+  [c01] appends=176 rereads=637 failures=0
+  [c02] appends=77 rereads=367 failures=0
+  [c03] appends=97 rereads=131 failures=0
+  [c04] appends=16 rereads=442 failures=0
+  [c05] appends=897 rereads=715 failures=0
+  [c06] appends=189 rereads=103 failures=0
+  [c07] appends=45 rereads=1522 failures=0
+  [c08] appends=115 rereads=812 failures=0
+RESULT label=server2-to-server3-sat contenders=8 records=32 pace=0.00 dur=30.0s appends=1612 appends_per_s=53.7 records_per_s=1719.4 rereads=4729 reread_rate=293.4% failures=0 p50=15ms p95=42ms p99=103ms max=19.041s

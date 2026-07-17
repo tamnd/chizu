@@ -1,0 +1,61 @@
+  [c01] appends=60 rereads=0 failures=0
+  [c02] appends=60 rereads=0 failures=0
+  [c03] appends=60 rereads=0 failures=0
+RESULT label=server3-local-design contenders=3 records=8 pace=1.00 dur=60.7s appends=180 appends_per_s=3.0 records_per_s=23.7 rereads=0 reread_rate=0.0% failures=0 p50=8ms p95=18ms p99=23ms max=39ms
+  [c01] appends=3189 rereads=0 failures=0
+RESULT label=server3-local-sat contenders=1 records=1 pace=0.00 dur=30.0s appends=3189 appends_per_s=106.3 records_per_s=106.3 rereads=0 reread_rate=0.0% failures=0 p50=9ms p95=15ms p99=23ms max=56ms
+  [c01] appends=2809 rereads=0 failures=0
+RESULT label=server3-local-sat contenders=1 records=8 pace=0.00 dur=30.0s appends=2809 appends_per_s=93.6 records_per_s=749.1 rereads=0 reread_rate=0.0% failures=0 p50=9ms p95=18ms p99=31ms max=73ms
+  [c01] appends=3063 rereads=0 failures=0
+RESULT label=server3-local-sat contenders=1 records=32 pace=0.00 dur=30.0s appends=3063 appends_per_s=102.1 records_per_s=3267.1 rereads=0 reread_rate=0.0% failures=0 p50=9ms p95=17ms p99=22ms max=56ms
+  [c01] appends=2158 rereads=756 failures=0
+  [c02] appends=756 rereads=391 failures=0
+RESULT label=server3-local-sat contenders=2 records=1 pace=0.00 dur=30.0s appends=2914 appends_per_s=97.1 records_per_s=97.1 rereads=1147 reread_rate=39.4% failures=0 p50=9ms p95=18ms p99=29ms max=8.238s
+  [c01] appends=3116 rereads=0 failures=0
+  [c02] appends=0 rereads=0 failures=0
+RESULT label=server3-local-sat contenders=2 records=8 pace=0.00 dur=30.0s appends=3116 appends_per_s=103.9 records_per_s=830.9 rereads=0 reread_rate=0.0% failures=0 p50=9ms p95=16ms p99=23ms max=58ms
+  [c01] appends=2300 rereads=50 failures=0
+  [c02] appends=50 rereads=2298 failures=0
+RESULT label=server3-local-sat contenders=2 records=32 pace=0.00 dur=30.0s appends=2350 appends_per_s=78.3 records_per_s=2506.6 rereads=2348 reread_rate=99.9% failures=0 p50=9ms p95=23ms p99=94ms max=28.41s
+  [c01] appends=15 rereads=1179 failures=0
+  [c02] appends=685 rereads=1082 failures=0
+  [c03] appends=741 rereads=1533 failures=0
+  [c04] appends=833 rereads=1099 failures=0
+RESULT label=server3-local-sat contenders=4 records=1 pace=0.00 dur=30.0s appends=2274 appends_per_s=75.8 records_per_s=75.8 rereads=4893 reread_rate=215.2% failures=0 p50=10ms p95=31ms p99=69ms max=13.083s
+  [c01] appends=1353 rereads=1281 failures=0
+  [c02] appends=394 rereads=1733 failures=0
+  [c03] appends=449 rereads=1096 failures=0
+  [c04] appends=438 rereads=1295 failures=0
+RESULT label=server3-local-sat contenders=4 records=8 pace=0.00 dur=30.0s appends=2634 appends_per_s=87.8 records_per_s=702.4 rereads=5405 reread_rate=205.2% failures=0 p50=10ms p95=21ms p99=35ms max=18.909s
+  [c01] appends=1056 rereads=1659 failures=0
+  [c02] appends=47 rereads=1323 failures=0
+  [c03] appends=1511 rereads=1090 failures=0
+  [c04] appends=184 rereads=1194 failures=0
+RESULT label=server3-local-sat contenders=4 records=32 pace=0.00 dur=30.0s appends=2798 appends_per_s=93.3 records_per_s=2984.1 rereads=5266 reread_rate=188.2% failures=0 p50=10ms p95=20ms p99=36ms max=10.164s
+  [c01] appends=149 rereads=1896 failures=0
+  [c02] appends=582 rereads=1048 failures=0
+  [c03] appends=442 rereads=1483 failures=0
+  [c04] appends=263 rereads=1759 failures=0
+  [c05] appends=293 rereads=593 failures=0
+  [c06] appends=158 rereads=1139 failures=0
+  [c07] appends=37 rereads=1000 failures=0
+  [c08] appends=400 rereads=1924 failures=0
+RESULT label=server3-local-sat contenders=8 records=1 pace=0.00 dur=30.0s appends=2324 appends_per_s=77.5 records_per_s=77.5 rereads=10842 reread_rate=466.5% failures=0 p50=11ms p95=28ms p99=539ms max=18.118s
+  [c01] appends=416 rereads=1803 failures=0
+  [c02] appends=211 rereads=2022 failures=0
+  [c03] appends=198 rereads=1819 failures=0
+  [c04] appends=308 rereads=1220 failures=0
+  [c05] appends=201 rereads=1948 failures=0
+  [c06] appends=169 rereads=2028 failures=0
+  [c07] appends=71 rereads=1528 failures=0
+  [c08] appends=674 rereads=1574 failures=0
+RESULT label=server3-local-sat contenders=8 records=8 pace=0.00 dur=30.0s appends=2248 appends_per_s=74.9 records_per_s=599.4 rereads=13942 reread_rate=620.2% failures=0 p50=11ms p95=29ms p99=1.517s max=19.819s
+  [c01] appends=272 rereads=1759 failures=0
+  [c02] appends=15 rereads=1316 failures=0
+  [c03] appends=80 rereads=2037 failures=0
+  [c04] appends=371 rereads=1787 failures=0
+  [c05] appends=504 rereads=1274 failures=0
+  [c06] appends=431 rereads=1744 failures=0
+  [c07] appends=152 rereads=2032 failures=0
+  [c08] appends=359 rereads=667 failures=0
+RESULT label=server3-local-sat contenders=8 records=32 pace=0.00 dur=30.0s appends=2184 appends_per_s=72.8 records_per_s=2328.9 rereads=12616 reread_rate=577.7% failures=0 p50=11ms p95=34ms p99=2.763s max=17.935s
