@@ -16,6 +16,7 @@ const (
 	magic       = "tamndchizu fmt01"
 	formatRoot  = 0x7A01
 	formatBatch = 0x7A02
+	formatCkpt  = 0x7A03
 	fversion    = 1
 	headerSize  = 32
 )
