@@ -34,7 +34,14 @@ type blockCodec struct {
 }
 
 func newBlockCodec(dict []byte) (*blockCodec, error) {
-	encPlain, err := zstd.NewWriter(nil)
+	return newBlockCodecLevel(dict, zstd.SpeedDefault)
+}
+
+// newBlockCodecLevel picks the encoder level; the graph segment writes at
+// level 1 (doc 04 section 6) because its deltas compress well regardless
+// and the graph build is encode-bound. Decoding is level-blind.
+func newBlockCodecLevel(dict []byte, level zstd.EncoderLevel) (*blockCodec, error) {
+	encPlain, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(level))
 	if err != nil {
 		return nil, err
 	}
