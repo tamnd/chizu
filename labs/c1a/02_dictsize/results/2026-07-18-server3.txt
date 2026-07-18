@@ -1,0 +1,11 @@
+# size: label arm block dim nterms term_bytes index_bytes entry_bytes struct_B_per_term total_B_per_term
+server3	size	32	fc	4000000	26659839	2340428	128000000	7.25	39.25
+server3	size	64	fc	4000000	26268995	1169305	128000000	6.86	38.86
+server3	size	128	fc	4000000	26073777	584475	128000000	6.66	38.66
+# fst: label arm block dim nterms states arcs bytes B_per_term
+server3	fst	0	dafsa	4000000	4822674	7304692	41401353	10.35
+# lookup: label arm block dim lookups M_per_s
+server3	lookup	32	fc	212992	0.105
+server3	lookup	64	fc	122880	0.061
+server3	lookup	128	fc	90112	0.045
+server3	lookup	64	hotfmt	135168	0.067
