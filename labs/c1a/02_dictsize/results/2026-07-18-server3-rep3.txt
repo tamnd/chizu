@@ -1,0 +1,5 @@
+# lookup: label arm block dim lookups M_per_s
+server3-rep3	lookup	32	fc	442368	0.110
+server3-rep3	lookup	64	fc	270336	0.068
+server3-rep3	lookup	128	fc	118784	0.029
+server3-rep3	lookup	64	hotfmt	233472	0.058
