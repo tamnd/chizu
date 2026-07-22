@@ -42,7 +42,7 @@ func TestLoopsSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, _ := os.Stat(path)
 	if st.Size() != 4<<20 {
 		t.Fatalf("backing file %d bytes, want %d", st.Size(), 4<<20)
