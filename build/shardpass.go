@@ -133,7 +133,9 @@ func (p *ShardPass) AddRow(row *coldfmt.PageRow) error {
 
 // addField tokenizes one field into the per-doc occurrence map and
 // returns its token count. Positions are uint16; occurrences past
-// 65535 tokens count toward tf and doclen but carry no position.
+// 65535 tokens count toward tf and doclen but clamp to the sentinel
+// 65535, so every set mask bit keeps at least one stored position and
+// the term stays representable as a hotfmt position run.
 func (p *ShardPass) addField(field int, text string) uint64 {
 	var n uint64
 	tokenize.Text(text, &p.stats, func(term []byte, pos uint32) {
@@ -147,6 +149,8 @@ func (p *ShardPass) addField(field int, text string) uint64 {
 		o.mask |= 1 << field
 		if pos <= 0xFFFF {
 			o.pos[field] = append(o.pos[field], uint16(pos))
+		} else if k := len(o.pos[field]); k == 0 || o.pos[field][k-1] < 0xFFFF {
+			o.pos[field] = append(o.pos[field], 0xFFFF)
 		}
 	})
 	return n
