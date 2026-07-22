@@ -160,7 +160,11 @@ func TestShardPassBands(t *testing.T) {
 		t.Fatalf("default budget produced %d runs", len(out.Runs))
 	}
 
-	docs, err := hotfmt.OpenDocBand(out.DocBand)
+	var band bytes.Buffer
+	if err := out.Docs.Seal(&band); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := hotfmt.OpenDocBand(band.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +218,14 @@ func TestShardPassDeterministic(t *testing.T) {
 			t.Fatalf("run %d bytes differ across builds", i)
 		}
 	}
-	if !bytes.Equal(a.DocBand, b.DocBand) {
+	var bandA, bandB bytes.Buffer
+	if err := a.Docs.Seal(&bandA); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Docs.Seal(&bandB); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(bandA.Bytes(), bandB.Bytes()) {
 		t.Fatal("doc band bytes differ across builds")
 	}
 }
