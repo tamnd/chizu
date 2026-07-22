@@ -12,21 +12,33 @@
 //     quantile. Query terms are drawn Zipf over the vocabulary (query
 //     logs are head-heavy too), plus an adversarial all-stopword class.
 //   - The rarest term drives: it reads all its blocks and its whole L1
-//     array (sequential, identical in both arms). Every other term is
-//     probed at each driver candidate docid; no block-max pruning is
-//     modeled, so rows are the worst case section 6 budgets against,
-//     and pruning only shrinks both arms.
+//     array (sequential, identical in every arm). Every other term is
+//     probed at the driver's candidates, Poissonized per L1 entry.
+//   - survive models block-max pruning strength: a probed block reads
+//     its postings with probability s, and its resident L2 entry (span
+//     max over 32 blocks) passes with probability 1-(1-s)^32, drawn
+//     correlated so a passing block always has a passing span. survive
+//     1 is the no-pruning worst case; doc 05's 1-3 MB arithmetic
+//     assumes MaxScore-style bounds, which is why sweep 1 (no pruning,
+//     no floors) measured 60-85 MB against it.
+//   - Every skip read pays the 4 KiB pread floor, and runs of touched
+//     L1 entries closer than 4 KiB coalesce into one pread.
+//
+// Arms:
+//
 //   - l1only: a probed term preads its entire L1 array, because
 //     nothing resident says where to look.
-//   - l1l2: resident L2 names the L1 spans, so the term preads only
-//     the touched L1 runs (runs closer than 4 KiB coalesce). Terms
-//     outside the residency knob (top-knob df ranks keep L2 mlocked)
-//     pay one extra pread for their L2 region first.
+//   - l1l2: resident L2 names the L1 spans; only spans whose L2 entry
+//     passes are read. Terms outside the residency knob (top-1000 df
+//     ranks keep L2 mlocked) pay one extra pread for their L2 region.
+//   - hybrid: the planner knows df and the candidate count up front
+//     and picks span-reads or the full array per term, whichever costs
+//     fewer bytes. This is what the read-planner slice would bake.
 //
-// Output is TSV: label arm knob class qterms queries l1kb_p50 l1kb_p99
-// preads_p50 preads_p99 blocks_p50 blocks_p99 nvme_mb_p99. l1kb is
-// skip-band bytes pread; nvme_mb adds postings blocks at the doc 05
-// compression accounting (~1.3 KB per block).
+// Output is TSV: label docs arm survive class qterms queries l1kb_p50
+// l1kb_p99 preads_p50 preads_p99 blocks_p50 blocks_p99 nvme_mb_p99.
+// l1kb is skip-band bytes pread; nvme_mb adds postings blocks at the
+// doc 05 compression accounting (~1.3 KB per block).
 package main
 
 import (
@@ -38,13 +50,14 @@ import (
 )
 
 const (
-	blockLen    = 128       // postings per block
-	l1Bytes     = 15        // L1 entry: 10 skip + 5 positions offset
-	l2Bytes     = 12        // padded L2 entry
-	l2Fan       = 32        // L1 entries per L2 entry
-	blockBytes  = 1331      // ~1.3 KB compressed postings block (doc 05 section 6)
-	coalesceGap = 4096      // L1 runs closer than one page read as one pread
-	vocab       = 1_000_000 // term ranks drawn 1..vocab
+	blockLen   = 128       // postings per block
+	l1Bytes    = 15        // L1 entry: 10 skip + 5 positions offset
+	l2Bytes    = 12        // padded L2 entry
+	l2Fan      = 32        // L1 entries per L2 entry
+	blockBytes = 1331      // ~1.3 KB compressed postings block (doc 05 section 6)
+	page       = 4096      // pread floor and run-coalesce gap
+	knob       = 1000      // L2 resident for top-knob df ranks (P3, sweep 1)
+	vocab      = 1_000_000 // term ranks drawn 1..vocab
 )
 
 type term struct {
@@ -57,6 +70,12 @@ type cost struct {
 	l1     int64 // skip-band bytes pread
 	preads int64
 	blocks int64 // postings blocks read
+}
+
+func (c *cost) add(o cost) {
+	c.l1 += o.l1
+	c.preads += o.preads
+	c.blocks += o.blocks
 }
 
 func main() {
@@ -74,39 +93,30 @@ func main() {
 		{"rand", []int{2, 3, 4}},
 		{"stop", []int{3}},
 	}
-	type arm struct {
-		name string
-		knob int64 // top-knob df ranks keep L2 resident; 0 = no resident L2
-	}
-	arms := []arm{
-		{"l1only", 0},
-		{"l1l2", 0},
-		{"l1l2", 1000},
-		{"l1l2", 10000},
-	}
+	arms := []string{"l1only", "l1l2", "hybrid"}
 
-	fmt.Println("label\tarm\tknob\tclass\tqterms\tqueries\tl1kb_p50\tl1kb_p99\tpreads_p50\tpreads_p99\tblocks_p50\tblocks_p99\tnvme_mb_p99")
+	fmt.Println("label\tdocs\tarm\tsurvive\tclass\tqterms\tqueries\tl1kb_p50\tl1kb_p99\tpreads_p50\tpreads_p99\tblocks_p50\tblocks_p99\tnvme_mb_p99")
 	for _, cl := range classes {
 		for _, qlen := range cl.qlens {
 			qs := genQueries(cl.name, qlen, *queries, *docs, *seed)
-			for _, a := range arms {
-				var l1kb, preads, blocks, mb []float64
+			for _, survive := range []float64{1, 0.1, 0.01} {
+				samples := map[string][][]float64{}
 				rng := rand.New(rand.NewSource(*seed + 1))
 				for _, q := range qs {
-					c := simQuery(q, *docs, a.name, a.knob, rng)
-					l1kb = append(l1kb, float64(c.l1)/1024)
-					preads = append(preads, float64(c.preads))
-					blocks = append(blocks, float64(c.blocks))
-					mb = append(mb, float64(c.l1+c.blocks*blockBytes)/1e6)
+					perArm := simQuery(q, survive, rng)
+					for i, a := range arms {
+						c := perArm[i]
+						samples[a] = append(samples[a], []float64{
+							float64(c.l1) / 1024,
+							float64(c.preads),
+							float64(c.blocks),
+							float64(c.l1+c.blocks*blockBytes) / 1e6,
+						})
+					}
 				}
-				sort.Float64s(l1kb)
-				sort.Float64s(preads)
-				sort.Float64s(blocks)
-				sort.Float64s(mb)
-				fmt.Printf("%s\t%s\t%d\t%s\t%d\t%d\t%.1f\t%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%.2f\n",
-					*label, a.name, a.knob, cl.name, qlen, len(qs),
-					pct(l1kb, 50), pct(l1kb, 99), pct(preads, 50), pct(preads, 99),
-					pct(blocks, 50), pct(blocks, 99), pct(mb, 99))
+				for _, a := range arms {
+					report(*label, *docs, a, survive, cl.name, qlen, samples[a])
+				}
 			}
 		}
 	}
@@ -129,8 +139,8 @@ func mkTerm(rank, docs int64) term {
 }
 
 // genQueries draws the query set once per (class, qlen) so every arm
-// prices the identical queries. rand draws ranks Zipf over the
-// vocabulary; stop draws from the top 50 ranks only.
+// and survive tier prices the identical queries. rand draws ranks Zipf
+// over the vocabulary; stop draws from the top 50 ranks only.
 func genQueries(class string, qlen, n int, docs, seed int64) [][]term {
 	rng := rand.New(rand.NewSource(seed + int64(qlen)))
 	zipf := rand.NewZipf(rng, 1.1, 1, vocab-1)
@@ -157,72 +167,104 @@ func genQueries(class string, qlen, n int, docs, seed int64) [][]term {
 	return qs
 }
 
-// simQuery walks one query: the rarest term drives, every candidate
-// docid probes the other terms, and the arm decides what the skip
-// descent costs.
-func simQuery(q []term, docs int64, arm string, knob int64, rng *rand.Rand) cost {
-	var c cost
+// simQuery prices one query for all three arms on shared draws;
+// returns costs indexed l1only, l1l2, hybrid.
+func simQuery(q []term, survive float64, rng *rand.Rand) [3]cost {
+	var out [3]cost
 	drv := q[0]
 
 	// The driver reads its whole L1 region sequentially and all its
-	// blocks; identical in both arms. Sequential preads at 256 KiB.
-	c.l1 += drv.nb * l1Bytes
-	c.preads += (drv.nb*l1Bytes + (256 << 10) - 1) / (256 << 10)
-	c.blocks += drv.nb
-
-	// Candidate docids: a uniform draw of df_driver positions over the
-	// docid space, generated in order as exponential gaps.
-	for _, t := range q[1:] {
-		mean := float64(docs) / float64(drv.df)
-		var probes, runBytes, runs int64
-		runStart, runEnd, last := int64(-1), int64(-1), int64(-1)
-		docid := 0.0
-		for {
-			docid += rng.ExpFloat64() * mean
-			d := int64(docid)
-			if d >= docs {
-				break
-			}
-			blk := d * t.nb / docs
-			if blk == last {
-				continue
-			}
-			last = blk
-			probes++
-			switch {
-			case runStart < 0:
-				runStart, runEnd = blk, blk
-			case (blk-runEnd)*l1Bytes <= coalesceGap:
-				runEnd = blk
-			default:
-				runBytes += (runEnd - runStart + 1) * l1Bytes
-				runs++
-				runStart, runEnd = blk, blk
-			}
-		}
-		if runStart >= 0 {
-			runBytes += (runEnd - runStart + 1) * l1Bytes
-			runs++
-		}
-		switch arm {
-		case "l1only":
-			// No resident level says where to look: the whole L1
-			// array comes in as one read.
-			c.l1 += t.nb * l1Bytes
-			c.preads++
-		case "l1l2":
-			c.l1 += runBytes
-			c.preads += runs
-			if t.rank > knob && probes > 0 {
-				// L2 not resident for this term: one pread for its
-				// L2 region before the descent.
-				c.l1 += ((t.nb + l2Fan - 1) / l2Fan) * l2Bytes
-				c.preads++
-			}
-		}
-		c.blocks += probes
+	// blocks; identical in every arm. Sequential preads at 256 KiB.
+	driver := cost{
+		l1:     pageAlign(drv.nb * l1Bytes),
+		preads: (drv.nb*l1Bytes + (256 << 10) - 1) / (256 << 10),
+		blocks: drv.nb,
 	}
-	return c
+	for i := range out {
+		out[i].add(driver)
+	}
+
+	for _, t := range q[1:] {
+		full, span, blocks := simTerm(t, drv.df, survive, rng)
+		hyb := span
+		if full.l1 < span.l1 {
+			hyb = full
+		}
+		out[0].add(full)
+		out[1].add(span)
+		out[2].add(hyb)
+		for i := range out {
+			out[i].blocks += blocks
+		}
+	}
+	return out
+}
+
+// simTerm walks one non-driver term's L1 entries. Each entry is probed
+// with the Poissonized probability of holding a driver candidate; a
+// probed entry's block survives block-max with probability survive,
+// and its L2 span entry passes with probability 1-(1-survive)^32,
+// drawn on one uniform so block-pass implies span-pass. Returns the
+// l1only cost, the l1l2 cost, and the postings blocks read (identical
+// across arms).
+func simTerm(t term, drvDF int64, survive float64, rng *rand.Rand) (full, span cost, blocks int64) {
+	probeP := 1 - math.Exp(-float64(drvDF)/float64(t.nb))
+	spanP := 1 - math.Pow(1-survive, l2Fan)
+	var probed int64
+	runStart, runEnd := int64(-1), int64(-1)
+	flush := func() {
+		if runStart < 0 {
+			return
+		}
+		span.l1 += pageAlign((runEnd - runStart + 1) * l1Bytes)
+		span.preads++
+		runStart, runEnd = -1, -1
+	}
+	for e := int64(0); e < t.nb; e++ {
+		if rng.Float64() >= probeP {
+			continue
+		}
+		probed++
+		r := rng.Float64()
+		if r < survive {
+			blocks++
+		}
+		if r >= spanP {
+			continue
+		}
+		switch {
+		case runStart < 0:
+			runStart, runEnd = e, e
+		case (e-runEnd)*l1Bytes <= page:
+			runEnd = e
+		default:
+			flush()
+			runStart, runEnd = e, e
+		}
+	}
+	flush()
+	if probed > 0 {
+		// l1only pays the whole array on any probe: nothing resident
+		// says the spans would have failed.
+		full.l1 = pageAlign(t.nb * l1Bytes)
+		full.preads = 1
+		if t.rank > knob {
+			// L2 not resident for this term: the descent preads the
+			// L2 region on any probe, even when every span then
+			// fails. The full-array read needs no L2 at all.
+			span.l1 += pageAlign(((t.nb + l2Fan - 1) / l2Fan) * l2Bytes)
+			span.preads++
+		}
+	}
+	return full, span, blocks
+}
+
+// pageAlign rounds bytes up to the 4 KiB pread floor.
+func pageAlign(b int64) int64 {
+	if b == 0 {
+		return 0
+	}
+	return (b + page - 1) / page * page
 }
 
 // pct returns the q-th percentile of sorted samples, nearest-rank.
@@ -232,4 +274,22 @@ func pct(sorted []float64, q float64) float64 {
 	}
 	i := int(math.Ceil(q/100*float64(len(sorted)))) - 1
 	return sorted[max(i, 0)]
+}
+
+// report prints one TSV row from per-query samples of
+// {l1kb, preads, blocks, nvme_mb}.
+func report(label string, docs int64, arm string, survive float64, class string, qlen int, rows [][]float64) {
+	cols := make([][]float64, 4)
+	for _, r := range rows {
+		for i, v := range r {
+			cols[i] = append(cols[i], v)
+		}
+	}
+	for i := range cols {
+		sort.Float64s(cols[i])
+	}
+	fmt.Printf("%s\t%d\t%s\t%g\t%s\t%d\t%d\t%.1f\t%.1f\t%.0f\t%.0f\t%.0f\t%.0f\t%.2f\n",
+		label, docs, arm, survive, class, qlen, len(rows),
+		pct(cols[0], 50), pct(cols[0], 99), pct(cols[1], 50), pct(cols[1], 99),
+		pct(cols[2], 50), pct(cols[2], 99), pct(cols[3], 99))
 }

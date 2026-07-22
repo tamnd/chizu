@@ -9,3 +9,4 @@ label="${1:?usage: run.sh <label>}"
 dir="$(dirname "$0")"
 
 go run "$dir" -label "$label" -docs 10000000 -queries 400
+go run "$dir" -label "$label" -docs 500000000 -queries 400 | tail -n +2

@@ -20,6 +20,15 @@ func TestDocFreq(t *testing.T) {
 	}
 }
 
+func TestPageAlign(t *testing.T) {
+	if pageAlign(0) != 0 {
+		t.Fatal("pageAlign(0) != 0")
+	}
+	if pageAlign(1) != page || pageAlign(page) != page || pageAlign(page+1) != 2*page {
+		t.Fatal("pageAlign not rounding to the pread floor")
+	}
+}
+
 func TestGenQueriesDeterministic(t *testing.T) {
 	a := genQueries("rand", 3, 50, 10_000_000, 7)
 	b := genQueries("rand", 3, 50, 10_000_000, 7)
@@ -46,22 +55,39 @@ func TestGenQueriesDeterministic(t *testing.T) {
 }
 
 func TestSimQueryArms(t *testing.T) {
-	const docs = 10_000_000
-	q := []term{mkTerm(50_000, docs), mkTerm(100, docs), mkTerm(5, docs)}
-	full := simQuery(q, docs, "l1only", 0, rand.New(rand.NewSource(7)))
-	span := simQuery(q, docs, "l1l2", 1000, rand.New(rand.NewSource(7)))
-	if full.blocks != span.blocks {
-		t.Fatalf("blocks differ across arms: %d vs %d (same seed, same traversal)", full.blocks, span.blocks)
+	const docs = 500_000_000
+	q := []term{mkTerm(200_000, docs), mkTerm(500, docs), mkTerm(2, docs)}
+	for _, survive := range []float64{1, 0.1, 0.01} {
+		arms := simQuery(q, survive, rand.New(rand.NewSource(7)))
+		full, span, hyb := arms[0], arms[1], arms[2]
+		if full.blocks != span.blocks || full.blocks != hyb.blocks {
+			t.Fatalf("survive %v: blocks differ across arms: %d %d %d", survive, full.blocks, span.blocks, hyb.blocks)
+		}
+		if hyb.l1 > full.l1 || hyb.l1 > span.l1 {
+			t.Fatalf("survive %v: hybrid l1 %d exceeds an arm it chooses from (%d, %d)", survive, hyb.l1, full.l1, span.l1)
+		}
+		if full.l1 <= 0 || full.preads <= 0 || full.blocks <= 0 {
+			t.Fatalf("survive %v: degenerate l1only cost: %+v", survive, full)
+		}
+		if survive == 1 && span.l1 < full.l1/2 {
+			t.Fatalf("no pruning should keep spans near the full array for a dense driver: span %d vs full %d", span.l1, full.l1)
+		}
 	}
-	if span.l1 >= full.l1 {
-		t.Fatalf("l1l2 skip bytes %d not below l1only %d for a rare driver", span.l1, full.l1)
+
+	// Strong pruning at 500M scale is where spans win: rare driver
+	// against a head term with a multi-MB L1 array.
+	rare := simQuery(q, 0.01, rand.New(rand.NewSource(7)))
+	if rare[2].l1 >= rare[0].l1 {
+		t.Fatalf("hybrid %d not below l1only %d at survive 0.01", rare[2].l1, rare[0].l1)
 	}
-	if full.l1 <= 0 || full.preads <= 0 || full.blocks <= 0 {
-		t.Fatalf("degenerate cost: %+v", full)
-	}
-	knob0 := simQuery(q, docs, "l1l2", 0, rand.New(rand.NewSource(7)))
-	if knob0.preads < span.preads || knob0.l1 < span.l1 {
-		t.Fatalf("knob 0 (no resident L2) should cost at least knob 1000: %+v vs %+v", knob0, span)
+}
+
+func TestSimQueryDeterministic(t *testing.T) {
+	q := []term{mkTerm(50_000, 10_000_000), mkTerm(100, 10_000_000)}
+	a := simQuery(q, 0.1, rand.New(rand.NewSource(7)))
+	b := simQuery(q, 0.1, rand.New(rand.NewSource(7)))
+	if a != b {
+		t.Fatalf("same-seed runs differ: %+v vs %+v", a, b)
 	}
 }
 
