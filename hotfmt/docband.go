@@ -1,9 +1,12 @@
 package hotfmt
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -83,48 +86,141 @@ func parseDocRecord(data []byte) (DocRecord, int, error) {
 	return r, pos, nil
 }
 
-// DocBandWriter accumulates records in local docid order and seals
-// them into the band. Records are buffered raw; compression and
-// dictionary training happen once at Seal.
+// DocBandWriter spools encoded records to disk in local docid order
+// and seals them into the band with two sequential passes over the
+// spool, so the band build holds one block of records in memory no
+// matter the doc count. The resident cost at Seal is the block offset
+// array: 8 bytes per 64 docs, about 12 MiB at 100M.
 type DocBandWriter struct {
-	recs []DocRecord
+	dir     string
+	f       *os.File
+	bw      *bufio.Writer
+	scratch []byte
+	n       uint32
+	err     error
+}
+
+// NewDocBandWriter spools into dir; the spool file appears on the
+// first Add and is removed by Seal.
+func NewDocBandWriter(dir string) *DocBandWriter {
+	return &DocBandWriter{dir: dir}
 }
 
 func (w *DocBandWriter) Add(r DocRecord) error {
+	if w.err != nil {
+		return w.err
+	}
 	if err := r.validate(); err != nil {
 		return err
 	}
-	w.recs = append(w.recs, r)
+	if w.f == nil {
+		f, err := os.CreateTemp(w.dir, "docband-*.spool")
+		if err != nil {
+			w.err = err
+			return err
+		}
+		w.f = f
+		w.bw = bufio.NewWriterSize(f, 1<<20)
+	}
+	// Each spooled record carries a u32 length prefix so the seal
+	// passes replay the exact appendDocRecord bytes without parsing.
+	w.scratch = appendDocRecord(w.scratch[:0], &r)
+	var pre [4]byte
+	binary.LittleEndian.PutUint32(pre[:], uint32(len(w.scratch)))
+	if _, err := w.bw.Write(pre[:]); err != nil {
+		w.err = err
+		return err
+	}
+	if _, err := w.bw.Write(w.scratch); err != nil {
+		w.err = err
+		return err
+	}
+	w.n++
 	return nil
 }
 
-// trainDocDict builds the shared dictionary as raw content: records
+// records replays the spool in order; fn returning false stops early.
+func (w *DocBandWriter) records(fn func(i uint32, rec []byte) (bool, error)) error {
+	if _, err := w.f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	br := bufio.NewReaderSize(w.f, 1<<20)
+	var pre [4]byte
+	var buf []byte
+	for i := uint32(0); i < w.n; i++ {
+		if _, err := io.ReadFull(br, pre[:]); err != nil {
+			return err
+		}
+		l := binary.LittleEndian.Uint32(pre[:])
+		if int(l) > cap(buf) {
+			buf = make([]byte, l)
+		}
+		rec := buf[:l]
+		if _, err := io.ReadFull(br, rec); err != nil {
+			return err
+		}
+		cont, err := fn(i, rec)
+		if err != nil || !cont {
+			return err
+		}
+	}
+	return nil
+}
+
+// trainDict builds the shared dictionary as raw content: records
 // stride-sampled across the band, concatenated up to the size cap.
 // A raw dictionary is a pure function of the records, which B2
 // (bit-identical builds) demands; the structured zstd trainer sorts
 // hash buckets out of map iteration order and can never be. Templated
 // corpora still share their URL prefixes and boilerplate through the
 // raw content. Small bands ship without a dictionary: dict_len 0.
-func trainDocDict(recs []DocRecord) []byte {
-	if len(recs) < docDictMinSamples {
-		return nil
+func (w *DocBandWriter) trainDict() ([]byte, error) {
+	if w.n < docDictMinSamples {
+		return nil, nil
 	}
-	stride := max(1, len(recs)/docDictSamples)
+	stride := max(1, int(w.n)/docDictSamples)
 	var d []byte
-	for i := 0; i < len(recs) && len(d) < docDictMaxSize; i += stride {
-		d = appendDocRecord(d, &recs[i])
+	err := w.records(func(i uint32, rec []byte) (bool, error) {
+		if int(i)%stride != 0 {
+			return true, nil
+		}
+		if len(d) >= docDictMaxSize {
+			return false, nil
+		}
+		d = append(d, rec...)
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	if len(d) > docDictMaxSize {
 		d = d[:docDictMaxSize]
 	}
-	return d
+	return d, nil
 }
 
-func (w *DocBandWriter) Seal() ([]byte, error) {
-	if len(w.recs) == 0 {
-		return nil, errors.New("hotfmt: doc band with no records")
+// Seal streams the band into out: dictionary pass, then block pass,
+// then the offset array and trailer. The spool is gone afterwards and
+// the writer is spent.
+func (w *DocBandWriter) Seal(out io.Writer) error {
+	if w.err != nil {
+		return w.err
 	}
-	d := trainDocDict(w.recs)
+	if w.n == 0 {
+		return errors.New("hotfmt: doc band with no records")
+	}
+	defer func() {
+		_ = w.f.Close()
+		_ = os.Remove(w.f.Name())
+	}()
+	if err := w.bw.Flush(); err != nil {
+		return err
+	}
+
+	d, err := w.trainDict()
+	if err != nil {
+		return err
+	}
 	// Concurrency pinned to 1: band bytes must be a pure function of
 	// the records (B2).
 	opts := []zstd.EOption{zstd.WithEncoderConcurrency(1)}
@@ -133,35 +229,60 @@ func (w *DocBandWriter) Seal() ([]byte, error) {
 	}
 	enc, err := zstd.NewWriter(nil, opts...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { _ = enc.Close() }()
 
-	var out []byte
-	var offs []uint64
-	var raw []byte
-	for start := 0; start < len(w.recs); start += docBlockDocs {
-		end := min(start+docBlockDocs, len(w.recs))
-		raw = raw[:0]
-		for i := start; i < end; i++ {
-			raw = appendDocRecord(raw, &w.recs[i])
+	ow := bufio.NewWriterSize(out, 1<<20)
+	var off uint64
+	offs := make([]uint64, 0, (w.n+docBlockDocs-1)/docBlockDocs)
+	var raw, blk []byte
+	flushBlock := func() error {
+		if len(raw) == 0 {
+			return nil
 		}
-		offs = append(offs, uint64(len(out)))
-		out = enc.EncodeAll(raw, out)
+		offs = append(offs, off)
+		blk = enc.EncodeAll(raw, blk[:0])
+		if _, err := ow.Write(blk); err != nil {
+			return err
+		}
+		off += uint64(len(blk))
+		raw = raw[:0]
+		return nil
 	}
-	dictOff := uint64(len(out))
-	out = append(out, d...)
+	err = w.records(func(i uint32, rec []byte) (bool, error) {
+		raw = append(raw, rec...)
+		if (i+1)%docBlockDocs == 0 {
+			return true, flushBlock()
+		}
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := flushBlock(); err != nil {
+		return err
+	}
+
+	dictOff := off
+	if _, err := ow.Write(d); err != nil {
+		return err
+	}
+	tail := make([]byte, 0, len(offs)*6+docBandTrailerSize)
 	for _, o := range offs {
 		if o > maxU48 {
-			return nil, errors.New("hotfmt: doc block offset exceeds u48")
+			return errors.New("hotfmt: doc block offset exceeds u48")
 		}
-		out = appendU48(out, o)
+		tail = appendU48(tail, o)
 	}
-	out = binary.LittleEndian.AppendUint64(out, dictOff)
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(d)))
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(offs)))
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(w.recs)))
-	return out, nil
+	tail = binary.LittleEndian.AppendUint64(tail, dictOff)
+	tail = binary.LittleEndian.AppendUint32(tail, uint32(len(d)))
+	tail = binary.LittleEndian.AppendUint32(tail, uint32(len(offs)))
+	tail = binary.LittleEndian.AppendUint32(tail, w.n)
+	if _, err := ow.Write(tail); err != nil {
+		return err
+	}
+	return ow.Flush()
 }
 
 // DocBand is the read view: resident offset array, lazy per-block

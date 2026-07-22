@@ -3,6 +3,7 @@ package hotfmt
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"testing"
 )
 
@@ -19,13 +20,22 @@ func fixtureDocRecord(i int) DocRecord {
 }
 
 func buildDocBand(n int) ([]byte, error) {
-	var w DocBandWriter
+	dir, err := os.MkdirTemp("", "chizu-docband-test-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	w := NewDocBandWriter(dir)
 	for i := range n {
 		if err := w.Add(fixtureDocRecord(i)); err != nil {
 			return nil, err
 		}
 	}
-	return w.Seal()
+	var buf bytes.Buffer
+	if err := w.Seal(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func checkDocBand(t *testing.T, band []byte, n int) {
@@ -73,8 +83,8 @@ func TestDocBandNoDict(t *testing.T) {
 }
 
 func TestDocBandRejects(t *testing.T) {
-	var w DocBandWriter
-	if _, err := w.Seal(); err == nil {
+	w := NewDocBandWriter(t.TempDir())
+	if err := w.Seal(&bytes.Buffer{}); err == nil {
 		t.Error("empty band sealed")
 	}
 	if err := w.Add(DocRecord{}); err == nil {
@@ -128,7 +138,7 @@ func FuzzOpenDocBand(f *testing.F) {
 		defer b.Close()
 		// Semantic invariant: every doc either reads cleanly or errors;
 		// the ones that read survive a rebuild of the band.
-		var w DocBandWriter
+		w := NewDocBandWriter(t.TempDir())
 		for i := range b.NDocs() {
 			r, err := b.Doc(i)
 			if err != nil {
@@ -138,11 +148,11 @@ func FuzzOpenDocBand(f *testing.F) {
 				t.Fatalf("doc %d read from an accepted band but rejected by the writer: %v", i, err)
 			}
 		}
-		band2, err := w.Seal()
-		if err != nil {
+		var band2 bytes.Buffer
+		if err := w.Seal(&band2); err != nil {
 			t.Fatalf("re-seal: %v", err)
 		}
-		b2, err := OpenDocBand(band2)
+		b2, err := OpenDocBand(band2.Bytes())
 		if err != nil {
 			t.Fatalf("reopen of rebuilt band: %v", err)
 		}
@@ -176,17 +186,17 @@ func TestDocBandDeterministic(t *testing.T) {
 		})
 	}
 	seal := func() []byte {
-		var w DocBandWriter
+		w := NewDocBandWriter(t.TempDir())
 		for i := range recs {
 			if err := w.Add(recs[i]); err != nil {
 				t.Fatal(err)
 			}
 		}
-		band, err := w.Seal()
-		if err != nil {
+		var band bytes.Buffer
+		if err := w.Seal(&band); err != nil {
 			t.Fatal(err)
 		}
-		return band
+		return band.Bytes()
 	}
 	a, b := seal(), seal()
 	if !bytes.Equal(a, b) {

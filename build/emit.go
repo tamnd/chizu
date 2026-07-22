@@ -328,7 +328,19 @@ func Emit(w io.Writer, out *ShardOutput, cfg *EmitConfig) (err error) {
 			return err
 		}
 	}
-	if err := fw.WriteBandBytes(hotfmt.BandDocband, out.DocBand); err != nil {
+	docband, derr := newSpool(cfg.SpoolDir, "docband.spool")
+	if derr != nil {
+		return derr
+	}
+	spools["docband"] = docband
+	if err := out.Docs.Seal(docband.bw); err != nil {
+		return err
+	}
+	dr, rerr := docband.reader()
+	if rerr != nil {
+		return rerr
+	}
+	if err := fw.WriteBand(hotfmt.BandDocband, dr); err != nil {
 		return err
 	}
 	return fw.Finish(&hotfmt.Provenance{

@@ -42,7 +42,7 @@ type ShardPass struct {
 	recSize int
 	runs    []string
 
-	docs    hotfmt.DocBandWriter
+	docs    *hotfmt.DocBandWriter
 	dvs     []hotfmt.DocValue
 	sumLen  [NumFields]uint64
 	stats   tokenize.Stats
@@ -51,10 +51,11 @@ type ShardPass struct {
 }
 
 // ShardOutput is what the emit pass consumes: sorted runs on disk plus
-// the bands that were finished in stream.
+// the bands that were finished in stream. Docs is the spooled doc band,
+// unsealed; the emit pass streams its Seal into the band slot.
 type ShardOutput struct {
 	Runs      []string
-	DocBand   []byte
+	Docs      *hotfmt.DocBandWriter
 	DocValues []hotfmt.DocValue
 	SumLen    [NumFields]uint64
 	DocCount  uint32
@@ -74,7 +75,11 @@ func NewShardPass(dir string, budget int) *ShardPass {
 	if budget <= 0 {
 		budget = DefaultRunBudget
 	}
-	return &ShardPass{dir: dir, budget: budget, occ: make(map[string]*docOcc)}
+	return &ShardPass{
+		dir: dir, budget: budget,
+		docs: hotfmt.NewDocBandWriter(dir),
+		occ:  make(map[string]*docOcc),
+	}
 }
 
 // AddRow tokenizes one page into the current run and writes its doc
@@ -192,13 +197,9 @@ func (p *ShardPass) Finish() (*ShardOutput, error) {
 	if err := p.spill(); err != nil {
 		return nil, err
 	}
-	docBand, err := p.docs.Seal()
-	if err != nil {
-		return nil, err
-	}
 	return &ShardOutput{
 		Runs:      p.runs,
-		DocBand:   docBand,
+		Docs:      p.docs,
 		DocValues: p.dvs,
 		SumLen:    p.sumLen,
 		DocCount:  p.docid,
