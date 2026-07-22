@@ -159,7 +159,7 @@ func NewRunWriter(path string) (*RunWriter, error) {
 		return nil, err
 	}
 	if _, err := f.Write(runMagic); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	// One concurrent frame: run bytes must be a pure function of the
@@ -167,7 +167,7 @@ func NewRunWriter(path string) (*RunWriter, error) {
 	// could split frames by timing.
 	zw, err := zstd.NewWriter(f, zstd.WithEncoderConcurrency(1))
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return &RunWriter{f: f, zw: zw}, nil
@@ -205,16 +205,16 @@ func OpenRun(path string) (*RunReader, error) {
 	}
 	var magic [5]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("build: run header: %w", err)
 	}
 	if string(magic[:]) != string(runMagic) {
-		f.Close()
+		_ = f.Close()
 		return nil, errors.New("build: not a run file")
 	}
 	zr, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(1))
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return &RunReader{f: f, zr: zr, br: bufio.NewReader(zr)}, nil
