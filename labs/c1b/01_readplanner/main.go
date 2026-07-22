@@ -61,7 +61,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "readplanner:", err)
 		os.Exit(1)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	want := map[string]bool{}
 	for a := range strings.SplitSeq(*arms, ",") {
@@ -98,15 +98,17 @@ func ensureFile(path string, size int64, seed int64) (*os.File, error) {
 	for off := int64(0); off < size; off += int64(len(buf)) {
 		rng.Read(buf)
 		if _, err := f.WriteAt(buf, off); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, err
 		}
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
 	return os.Open(path)
 }
 
@@ -116,7 +118,7 @@ func ensureFile(path string, size int64, seed int64) (*os.File, error) {
 func runHot(label string, f *os.File, secs float64, seed int64) {
 	warm := make([]byte, 4<<20)
 	for off := int64(0); off < hotWindow; off += int64(len(warm)) {
-		f.ReadAt(warm, off)
+		_, _ = f.ReadAt(warm, off)
 	}
 	for _, depth := range []int{1, 2, 4, 8, 16, 32} {
 		lat, reads := opLoop(f, hotWindow, 4<<10, depth, secs, seed)
@@ -220,7 +222,9 @@ func batchLoop(f *os.File, span int64, needed, extra, depth int, secs float64, s
 				defer allWG.Done()
 				sem <- struct{}{}
 				buf := <-bufs
-				f.ReadAt(buf, off)
+				if _, err := f.ReadAt(buf, off); err != nil {
+					fmt.Fprintln(os.Stderr, "readplanner: pread:", err)
+				}
 				bufs <- buf
 				<-sem
 				if i < needed {
@@ -245,7 +249,7 @@ func alignedOffset(rng *rand.Rand, span int64, block int) int64 {
 // dropCaches asks the kernel for a cold page cache; on failure the row
 // is marked so a warm-cache sweep can never pass silently as cold.
 func dropCaches(label string) {
-	exec.Command("sync").Run()
+	_ = exec.Command("sync").Run()
 	if err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3"), 0); err != nil {
 		fmt.Printf("# %s: drop_caches failed (%v); rows below are NOT cold\n", label, err)
 	}
