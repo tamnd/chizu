@@ -23,6 +23,14 @@ import (
 // run keeps a 500M-doc shard to one merge pass.
 const DefaultRunBudget = 2 << 30
 
+// recBaseCost is the resident overhead of one buffered record beyond
+// its variable bytes: the Rec struct in the run buffer (88 bytes) plus
+// allocator rounding on the term, rounded up. Position clones add
+// their own base below. Counting only encoded bytes undercounted the
+// real footprint about tenfold and OOM-killed the first 10M fixture
+// build before its first spill.
+const recBaseCost = 112
+
 // snippetBudget bounds the stored snippet source per doc (doc 05
 // section 9 stores ~1 KiB).
 const snippetBudget = 1024
@@ -111,7 +119,13 @@ func (p *ShardPass) AddRow(row *coldfmt.PageRow) error {
 			rec.Pos[f] = slices.Clone(o.pos[f])
 		}
 		p.recs = append(p.recs, rec)
-		p.recSize += len(t) + 16 + 2*(len(rec.Pos[0])+len(rec.Pos[1]))
+		size := recBaseCost + len(t)
+		for f := range NumFields {
+			if n := len(rec.Pos[f]); n > 0 {
+				size += 16 + 2*n
+			}
+		}
+		p.recSize += size
 		delete(p.occ, t)
 	}
 
