@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/klauspost/compress/dict"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -23,6 +22,7 @@ const (
 
 	docDictMaxSize    = 64 << 10
 	docDictMinSamples = 8
+	docDictSamples    = 256
 )
 
 // DocRecord is one doc's display record: what serving needs to render
@@ -98,27 +98,24 @@ func (w *DocBandWriter) Add(r DocRecord) error {
 	return nil
 }
 
-// trainDocDict trains the shared dictionary on per-record bytes. Small
-// or degenerate corpora fail training and the band then ships without
-// a dictionary, which is valid: dict_len 0.
+// trainDocDict builds the shared dictionary as raw content: records
+// stride-sampled across the band, concatenated up to the size cap.
+// A raw dictionary is a pure function of the records, which B2
+// (bit-identical builds) demands; the structured zstd trainer sorts
+// hash buckets out of map iteration order and can never be. Templated
+// corpora still share their URL prefixes and boilerplate through the
+// raw content. Small bands ship without a dictionary: dict_len 0.
 func trainDocDict(recs []DocRecord) []byte {
 	if len(recs) < docDictMinSamples {
 		return nil
 	}
-	samples := make([][]byte, 0, min(len(recs), 1024))
-	for i := range recs {
-		samples = append(samples, appendDocRecord(nil, &recs[i]))
-		if len(samples) == 1024 {
-			break
-		}
+	stride := max(1, len(recs)/docDictSamples)
+	var d []byte
+	for i := 0; i < len(recs) && len(d) < docDictMaxSize; i += stride {
+		d = appendDocRecord(d, &recs[i])
 	}
-	d, err := dict.BuildZstdDict(samples, dict.Options{
-		MaxDictSize: docDictMaxSize,
-		HashBytes:   6,
-		ZstdDictID:  formatHot,
-	})
-	if err != nil {
-		return nil
+	if len(d) > docDictMaxSize {
+		d = d[:docDictMaxSize]
 	}
 	return d
 }
@@ -128,13 +125,13 @@ func (w *DocBandWriter) Seal() ([]byte, error) {
 		return nil, errors.New("hotfmt: doc band with no records")
 	}
 	d := trainDocDict(w.recs)
-	var enc *zstd.Encoder
-	var err error
+	// Concurrency pinned to 1: band bytes must be a pure function of
+	// the records (B2).
+	opts := []zstd.EOption{zstd.WithEncoderConcurrency(1)}
 	if d != nil {
-		enc, err = zstd.NewWriter(nil, zstd.WithEncoderDict(d))
-	} else {
-		enc, err = zstd.NewWriter(nil)
+		opts = append(opts, zstd.WithEncoderDictRaw(formatHot, d))
 	}
+	enc, err := zstd.NewWriter(nil, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +214,7 @@ func OpenDocBand(data []byte) (*DocBand, error) {
 	// magnitude to spare and turns a decompression bomb into an error.
 	opts := []zstd.DOption{zstd.WithDecoderMaxMemory(64 << 20)}
 	if dictLen > 0 {
-		opts = append(opts, zstd.WithDecoderDicts(data[dictOff:dictOff+uint64(dictLen)]))
+		opts = append(opts, zstd.WithDecoderDictRaw(formatHot, data[dictOff:dictOff+uint64(dictLen)]))
 	}
 	var err error
 	b.dec, err = zstd.NewReader(nil, opts...)

@@ -160,3 +160,49 @@ func FuzzOpenDocBand(f *testing.F) {
 		}
 	})
 }
+
+// The sealed band must be a pure function of the records (B2): the
+// raw-content dictionary replaced the structured zstd trainer, whose
+// map-order hash sort made the bytes vary run to run past
+// docDictMinSamples records.
+func TestDocBandDeterministic(t *testing.T) {
+	var recs []DocRecord
+	for i := range 306 {
+		recs = append(recs, DocRecord{
+			URL:     fmt.Appendf(nil, "https://t.chizu/w%03d", i),
+			Title:   fmt.Appendf(nil, "Water report %d", i),
+			Snippet: fmt.Appendf(nil, "water level w%d rises in region r%d water", i, i%7),
+			URLFP:   [16]byte{byte(i)},
+		})
+	}
+	seal := func() []byte {
+		var w DocBandWriter
+		for i := range recs {
+			if err := w.Add(recs[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		band, err := w.Seal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return band
+	}
+	a, b := seal(), seal()
+	if !bytes.Equal(a, b) {
+		t.Fatal("doc band bytes differ across seals")
+	}
+	// The dictionary actually trained and the band still reads back.
+	db, err := OpenDocBand(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, err := db.Doc(300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rec.URL) != "https://t.chizu/w300" {
+		t.Fatalf("doc 300 url %s", rec.URL)
+	}
+}
