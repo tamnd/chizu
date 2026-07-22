@@ -9,14 +9,20 @@ import (
 	"time"
 )
 
-func TestDevTokenize(t *testing.T) {
-	got := devTokenize("The Andes: mountain-chain, 2nd try!")
-	want := []string{"the", "andes", "mountain", "chain", "2nd", "try"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokenize drifted: %v", got)
+// The dev vertical now runs the real pipeline, so the shard must be a
+// pure function of the corpus.
+func TestDevBuildDeterministic(t *testing.T) {
+	rows := devCorpus()
+	a, err := devBuildShard(rows)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if toks := devTokenize(""); len(toks) != 0 {
-		t.Fatalf("empty input gave %v", toks)
+	b, err := devBuildShard(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatal("shard bytes differ across builds")
 	}
 }
 

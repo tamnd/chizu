@@ -10,11 +10,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
+	"github.com/tamnd/chizu/build"
 	"github.com/tamnd/chizu/chain"
 	"github.com/tamnd/chizu/coldfmt"
 	"github.com/tamnd/chizu/hotfmt"
@@ -89,7 +91,12 @@ func dev(args []string) error {
 		return err
 	}
 	shardKey := *prefix + "hot/s0000/0000000000000001.hot"
-	if _, err := client.Put(ctx, shardKey, shardBytes); err != nil {
+	hotPath := filepath.Join(os.TempDir(), fmt.Sprintf("chizu-dev-%016x.hot", root.DBID))
+	if err := os.WriteFile(hotPath, shardBytes, 0o644); err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(hotPath) }()
+	if err := build.UploadHot(ctx, client, shardKey, hotPath, build.DefaultPartSize); err != nil {
 		return err
 	}
 	fmt.Printf("build stub: %d docs -> %s (%d bytes)\n", len(crawled), shardKey, len(shardBytes))
@@ -212,223 +219,44 @@ func devCorpus() []coldfmt.PageRow {
 	return rows
 }
 
-// devTokenize is the stub tokenizer: lowercase ASCII words. The real
-// tokenizer (doc 06) replaces it in C2; its version is frozen in the
-// root, so the swap is a rebuild, not a migration.
-func devTokenize(s string) []string {
-	var toks []string
-	start := -1
-	flush := func(end int) {
-		if start >= 0 {
-			toks = append(toks, s[start:end])
-			start = -1
-		}
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		alnum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-		if c >= 'A' && c <= 'Z' {
-			// Lowercasing rewrites the byte, so cut the word here and
-			// build it from a lowered copy instead.
-			alnum = true
-		}
-		if !alnum {
-			flush(i)
-			continue
-		}
-		if start < 0 {
-			start = i
-		}
-	}
-	flush(len(s))
-	for i, t := range toks {
-		toks[i] = lowerASCII(t)
-	}
-	return toks
-}
-
-func lowerASCII(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
-}
-
-// devOcc is one term's occurrences in one doc: total tf and per-field
-// positions (0 body, 1 title).
-type devOcc struct {
-	tf  int
-	pos [2][]uint16
-}
-
-// devBuildShard is the build stub: crawled rows in, one sealed base
-// .hot shard out, every band populated the way doc 05 lays them down.
+// devBuildShard runs the real build pipeline: the shard pass spills
+// sorted runs, the emit pass merges them into a sealed .hot on scratch
+// disk, and the bytes come back for the multipart upload. BuildMS is
+// the corpus's max fetch watermark, so the shard stays a pure function
+// of its input (B2).
 func devBuildShard(rows []coldfmt.PageRow) ([]byte, error) {
-	post := make(map[string]map[uint32]*devOcc)
-	var sumLen [2]uint64
-	addField := func(docid uint32, field int, text string) uint64 {
-		toks := devTokenize(text)
-		for i, tok := range toks {
-			if i > 0xFFFF {
-				break
-			}
-			m := post[tok]
-			if m == nil {
-				m = make(map[uint32]*devOcc)
-				post[tok] = m
-			}
-			o := m[docid]
-			if o == nil {
-				o = &devOcc{}
-				m[docid] = o
-			}
-			o.tf++
-			o.pos[field] = append(o.pos[field], uint16(i))
-		}
-		return uint64(len(toks))
+	dir, err := os.MkdirTemp("", "chizu-dev-build-")
+	if err != nil {
+		return nil, err
 	}
+	defer func() { _ = os.RemoveAll(dir) }()
 
-	docCount := uint32(len(rows))
-	dvs := make([]hotfmt.DocValue, len(rows))
-	var docsW hotfmt.DocBandWriter
-	for i, r := range rows {
-		docid := uint32(i)
-		bl := addField(docid, 0, r.Text)
-		tl := addField(docid, 1, r.Title)
-		sumLen[0] += bl
-		sumLen[1] += tl
-		dvs[i] = hotfmt.DocValue{
-			Quality:     128,
-			Lang:        r.Lang,
-			DoclenBody:  uint8(min(bl, 255)),
-			DoclenTitle: uint8(min(tl, 15)),
-		}
-		snippet := r.Text
-		if len(snippet) > 120 {
-			snippet = snippet[:120]
-		}
-		err := docsW.Add(hotfmt.DocRecord{
-			URL:     []byte(r.URL),
-			Title:   []byte(r.Title),
-			Snippet: []byte(snippet),
-			URLFP:   r.URLFP,
-		})
-		if err != nil {
+	p := build.NewShardPass(dir, build.DefaultRunBudget)
+	var watermark uint64
+	for i := range rows {
+		watermark = max(watermark, rows[i].FetchMS)
+		if err := p.AddRow(&rows[i]); err != nil {
 			return nil, err
 		}
 	}
-
-	var dictW hotfmt.DictWriter
-	var postingsBand, skipsBand, positionsBand []byte
-	terms := slices.Sorted(maps.Keys(post))
-	for _, term := range terms {
-		m := post[term]
-		ps := make([]hotfmt.Posting, 0, len(m))
-		for _, d := range slices.Sorted(maps.Keys(m)) {
-			o := m[d]
-			var mask uint8
-			for f := range 2 {
-				if len(o.pos[f]) > 0 {
-					mask |= 1 << f
-				}
-			}
-			tf := uint8(min(o.tf, 255))
-			ps = append(ps, hotfmt.Posting{Docid: d, TF: tf, Mask: mask, Impact: tf})
-		}
-		e := hotfmt.DictEntry{DF: uint32(len(ps))}
-		if len(ps) <= 4 {
-			for _, p := range ps {
-				e.Inline = append(e.Inline, hotfmt.InlinePosting{Docid: p.Docid, TF: p.TF, Mask: p.Mask})
-			}
-		} else {
-			enc, l1, err := hotfmt.EncodePostings(ps)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", term, err)
-			}
-			var cf uint64
-			runOffs := make([]uint64, 0, len(ps))
-			for _, p := range ps {
-				cf += uint64(p.TF)
-				runOffs = append(runOffs, uint64(len(positionsBand)))
-				o := m[p.Docid]
-				var fields []hotfmt.FieldPositions
-				for f := range 2 {
-					if len(o.pos[f]) > 0 {
-						fields = append(fields, hotfmt.FieldPositions{Field: uint8(f), Positions: o.pos[f]})
-					}
-				}
-				positionsBand, err = hotfmt.AppendPositionRun(positionsBand, p.Mask, fields)
-				if err != nil {
-					return nil, fmt.Errorf("%s: %w", term, err)
-				}
-			}
-			posOffs := make([]uint64, len(l1))
-			for bi := range l1 {
-				posOffs[bi] = runOffs[bi*hotfmt.PostingsBlockLen]
-			}
-			e = hotfmt.DictEntry{
-				DF:          uint32(len(ps)),
-				CF:          cf,
-				PostingsOff: uint64(len(postingsBand)),
-				PostingsLen: uint32(len(enc)),
-				SkipOff:     uint64(len(skipsBand)),
-			}
-			postingsBand = append(postingsBand, enc...)
-			skipsBand, err = hotfmt.EncodeSkips(skipsBand, l1, posOffs)
-			if err != nil {
-				return nil, fmt.Errorf("%s: %w", term, err)
-			}
-		}
-		if err := dictW.Add([]byte(term), &e); err != nil {
-			return nil, fmt.Errorf("%s: %w", term, err)
-		}
-	}
-	dictBand, err := dictW.Seal()
+	out, err := p.Finish()
 	if err != nil {
 		return nil, err
 	}
-	dvBand, err := hotfmt.EncodeDocValues(dvs)
-	if err != nil {
+	var buf bytes.Buffer
+	cfg := &build.EmitConfig{
+		SpoolDir:   dir,
+		Shard:      0,
+		Generation: 1,
+		Writer:     1,
+		Builder:    1,
+		BuildMS:    watermark,
+		Watermarks: []uint64{watermark},
+	}
+	if err := build.Emit(&buf, out, cfg); err != nil {
 		return nil, err
 	}
-	docBand, err := docsW.Seal()
-	if err != nil {
-		return nil, err
-	}
-
-	h := &hotfmt.FileHeader{
-		Shard: 0, Generation: 1, Kind: hotfmt.KindBase,
-		DocCount: docCount, TermCount: uint64(len(terms)),
-		TokenizerVer: 1, QuantScale: 1, Writer: 1,
-	}
-	meta := &hotfmt.Meta{
-		LawVer: 1, TokenizerVer: 1, QuantScale: 1, QuantPolicy: 1,
-		DocCount: docCount,
-		Fields: []hotfmt.MetaField{
-			{ID: 0, Name: "body", SumLen: sumLen[0]},
-			{ID: 1, Name: "title", SumLen: sumLen[1]},
-		},
-		Lineage: []uint64{1},
-	}
-	stats := &hotfmt.FieldStats{
-		K1: 1.2, Alpha: 1, Beta: 1,
-		Fields: []hotfmt.FieldStat{
-			{ID: 0, TotalTokens: sumLen[0], AvgLen: float32(sumLen[0]) / float32(docCount), Weight: 1, B: 0.75},
-			{ID: 1, TotalTokens: sumLen[1], AvgLen: float32(sumLen[1]) / float32(docCount), Weight: 2.5, B: 0.6},
-		},
-	}
-	prov := &hotfmt.Provenance{Builder: 1, BuildMS: uint64(time.Now().UnixMilli()), Watermarks: []uint64{1}}
-	return hotfmt.EncodeFile(h, meta, stats, map[byte][]byte{
-		hotfmt.BandDict:      dictBand,
-		hotfmt.BandPostings:  postingsBand,
-		hotfmt.BandSkips:     skipsBand,
-		hotfmt.BandPositions: positionsBand,
-		hotfmt.BandDocvalues: dvBand,
-		hotfmt.BandDocband:   docBand,
-	}, prov)
+	return buf.Bytes(), nil
 }
 
 // devShard is the serve stub's residency: every band held in memory so
