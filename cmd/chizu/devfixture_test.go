@@ -19,7 +19,7 @@ func TestDevFixtureOffline(t *testing.T) {
 	const n = 1200
 	dir := t.TempDir()
 	c := fixture.New(devFixtureSeed, n)
-	hotPath, err := devFixtureBuild(dir, c, 400)
+	hotPath, err := devFixtureBuild(dir, c, 400, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,6 +35,7 @@ func dev(args []string) error {
 	prefix := fs.String("prefix", "dev/", "database key prefix inside the bucket")
 	fixtureN := fs.Uint64("fixture", 0, "build and serve an N-doc fixture shard instead of the 8-page corpus")
 	scratch := fs.String("scratch", "", "scratch directory for build spools and the .hot (default: a temp dir)")
+	runBudget := fs.Int("runbudget", 0, "resident bytes of buffered records per sorted run (default: build.DefaultRunBudget); bigger runs mean fewer files in the merge")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -59,7 +60,7 @@ func dev(args []string) error {
 		return err
 	}
 	if *fixtureN > 0 {
-		return devFixture(ctx, client, *prefix, *scratch, *fixtureN)
+		return devFixture(ctx, client, *prefix, *scratch, *fixtureN, *runBudget)
 	}
 	root, err := devRoot(ctx, client, *prefix)
 	if err != nil {

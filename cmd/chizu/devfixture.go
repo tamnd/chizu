@@ -31,7 +31,7 @@ const (
 	devFixtureRowsSeg = 10_000
 )
 
-func devFixture(ctx context.Context, client *s3c.Client, prefix, scratch string, n uint64) error {
+func devFixture(ctx context.Context, client *s3c.Client, prefix, scratch string, n uint64, runBudget int) error {
 	dir := scratch
 	if dir == "" {
 		var err error
@@ -42,7 +42,7 @@ func devFixture(ctx context.Context, client *s3c.Client, prefix, scratch string,
 	}
 
 	c := fixture.New(devFixtureSeed, n)
-	hotPath, err := devFixtureBuild(dir, c, devFixtureRowsSeg)
+	hotPath, err := devFixtureBuild(dir, c, devFixtureRowsSeg, runBudget)
 	if err != nil {
 		return err
 	}
@@ -72,8 +72,8 @@ func devFixture(ctx context.Context, client *s3c.Client, prefix, scratch string,
 // the shard pass and emits the .hot to a file in dir. Segments live
 // only as in-memory bytes, one at a time; the build never sees a page
 // except through coldfmt.
-func devFixtureBuild(dir string, c *fixture.Corpus, rowsPerSeg int) (string, error) {
-	p := build.NewShardPass(dir, build.DefaultRunBudget)
+func devFixtureBuild(dir string, c *fixture.Corpus, rowsPerSeg, runBudget int) (string, error) {
+	p := build.NewShardPass(dir, runBudget)
 	var watermark uint64
 	var built uint64
 	err := c.Segments(1, rowsPerSeg, func(seq uint64, seg []byte) error {
