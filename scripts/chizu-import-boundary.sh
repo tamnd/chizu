@@ -60,6 +60,7 @@ check wire "" ""
 check s3c "" ""
 check chain "s3c,wire" ""
 check fixture "coldfmt" ""
+check tokenize "" "golang.org/x/text/*"
 
 for plane in crawl build serve rootsrv; do
   [ -d "$plane" ] || continue
