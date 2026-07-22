@@ -36,7 +36,7 @@ func TestRunRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	var rec Rec
 	for i := range want {
 		if err := r.Next(&rec); err != nil {

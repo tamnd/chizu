@@ -170,7 +170,7 @@ func (p *ShardPass) spill() error {
 	}
 	for i := range p.recs {
 		if err := w.Add(&p.recs[i]); err != nil {
-			w.Close()
+			_ = w.Close()
 			return err
 		}
 	}

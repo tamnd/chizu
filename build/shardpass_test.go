@@ -142,7 +142,7 @@ func TestShardPassMatchesBruteForce(t *testing.T) {
 			}
 			seen++
 		}
-		r.Close()
+		_ = r.Close()
 	}
 	total := 0
 	for _, m := range want {
