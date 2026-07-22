@@ -319,6 +319,9 @@ func TestUploadHot(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if err := c.CreateBucket(ctx); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
 
 	data := emitShard(t, testRows(t), 0)
 	path := filepath.Join(t.TempDir(), "shard.hot")
