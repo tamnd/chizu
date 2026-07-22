@@ -33,6 +33,8 @@ import (
 func dev(args []string) error {
 	fs := flag.NewFlagSet("chizu dev", flag.ContinueOnError)
 	prefix := fs.String("prefix", "dev/", "database key prefix inside the bucket")
+	fixtureN := fs.Uint64("fixture", 0, "build and serve an N-doc fixture shard instead of the 8-page corpus")
+	scratch := fs.String("scratch", "", "scratch directory for build spools and the .hot (default: a temp dir)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -45,10 +47,19 @@ func dev(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// The 8-page vertical is over in seconds; a 100M-doc fixture build
+	// owns the box for hours.
+	timeout := 2 * time.Minute
+	if *fixtureN > 0 {
+		timeout = 12 * time.Hour
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := client.CreateBucket(ctx); err != nil {
 		return err
+	}
+	if *fixtureN > 0 {
+		return devFixture(ctx, client, *prefix, *scratch, *fixtureN)
 	}
 	root, err := devRoot(ctx, client, *prefix)
 	if err != nil {
