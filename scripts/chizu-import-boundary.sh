@@ -59,6 +59,7 @@ check hotfmt "" "github.com/klauspost/compress/*"
 check wire "" ""
 check s3c "" ""
 check chain "s3c,wire" ""
+check fixture "coldfmt" ""
 
 for plane in crawl build serve rootsrv; do
   [ -d "$plane" ] || continue
