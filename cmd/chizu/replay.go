@@ -74,7 +74,7 @@ func readQueryLog(path string) ([][][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var queries [][][]byte
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -100,7 +100,7 @@ func synthQueryLog(path string, n int, seed int64) ([][][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
 		return nil, err

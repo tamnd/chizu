@@ -47,7 +47,7 @@ func TestServerQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := c.Ping(); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestServerAbsentTerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	r, busy, err := c.Query(testQuery([]string{"nosuchterm"}, 10, 100))
 	if err != nil || busy {
 		t.Fatalf("busy=%v err=%v", busy, err)
@@ -107,7 +107,7 @@ func TestServerMissingShard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	q := testQuery([]string{"t00"}, 10, 100)
 	q.Shards = []uint16{99}
 	r, busy, err := c.Query(q)
@@ -126,7 +126,7 @@ func TestServerExpiredBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	q := testQuery([]string{"t00"}, 10, 100)
 	q.BudgetUS = 1 // T3 is already behind us at receipt
 	r, busy, err := c.Query(q)
@@ -145,7 +145,7 @@ func TestServerBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	// Fill the in-flight slots by hand: the accounting, not the load,
 	// is what the test pins.
 	s.inflight.Add(2)
@@ -173,7 +173,7 @@ func TestServerMalformedQueryClosesConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	frame, err := wire.AppendFrame(nil, wire.KindQuery, 9, []byte{1, 2, 3})
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestServerCancelUnknownReqid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	frame, err := wire.AppendFrame(nil, wire.KindCancel, 12345, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestServerConcurrentQueries(t *testing.T) {
 				done <- err
 				return
 			}
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 			for range 20 {
 				r, busy, err := c.Query(testQuery(qn, 10, 100))
 				if err != nil {
@@ -280,7 +280,7 @@ func TestServerCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}

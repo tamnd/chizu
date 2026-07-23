@@ -26,7 +26,7 @@ func serveCmd(args []string) error {
 		return err
 	}
 	if fs.NArg() == 0 {
-		return errors.New("usage: chizu serve [flags] shard.hot...")
+		return errors.New("usage: chizu serve [flags] shard.hot files")
 	}
 	var mode serve.MlockMode
 	switch *mlock {
