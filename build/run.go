@@ -192,14 +192,41 @@ func (w *RunWriter) Close() error {
 
 // RunReader streams records back out of a run file.
 type RunReader struct {
-	f  *os.File
-	zr *zstd.Decoder
-	br *bufio.Reader
+	f    *os.File
+	zr   *zstd.Decoder
+	br   *bufio.Reader
+	cr   *countingReader
+	path string
+
+	punched int64 // compressed bytes already hole-punched
+	dead    bool  // hole punching failed once; stop trying
 }
 
-// OpenRun opens path and checks the header.
+// punchChunk is how far the decode cursor advances between hole
+// punches of the consumed prefix. Large enough that the fallocate
+// cost disappears, small enough that a 100M-doc merge's spool space
+// tracks the shard growth instead of adding to it.
+const punchChunk = 64 << 20
+
+// countingReader tracks compressed bytes handed to the decoder; every
+// counted byte is in decoder memory or already decoded, so the file
+// prefix behind the count is dead weight on disk.
+type countingReader struct {
+	f *os.File
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.f.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// OpenRun opens path and checks the header. The file opens read-write
+// so the merge can hole-punch the consumed prefix; runs are the build
+// node's own spool, never an input it must preserve.
 func OpenRun(path string) (*RunReader, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -212,12 +239,13 @@ func OpenRun(path string) (*RunReader, error) {
 		_ = f.Close()
 		return nil, errors.New("build: not a run file")
 	}
-	zr, err := zstd.NewReader(f, zstd.WithDecoderConcurrency(1))
+	cr := &countingReader{f: f, n: int64(len(magic))}
+	zr, err := zstd.NewReader(cr, zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		_ = f.Close()
 		return nil, err
 	}
-	return &RunReader{f: f, zr: zr, br: bufio.NewReader(zr)}, nil
+	return &RunReader{f: f, zr: zr, br: bufio.NewReader(zr), cr: cr, path: path}, nil
 }
 
 // Next decodes the next record into r, reusing r's slices; io.EOF ends
@@ -226,8 +254,29 @@ func (r *RunReader) Next(rec *Rec) error {
 	return readRec(r.br, rec)
 }
 
+// Reclaim hole-punches the consumed compressed prefix once it has
+// grown by punchChunk since the last punch. Failure (non-Linux, or a
+// filesystem without holes) turns reclaim off for this run; the space
+// then comes back at Remove like before.
+func (r *RunReader) Reclaim() {
+	if r.dead || r.cr.n-r.punched < punchChunk {
+		return
+	}
+	if err := punchHole(r.f.Fd(), r.punched, r.cr.n-r.punched); err != nil {
+		r.dead = true
+		return
+	}
+	r.punched = r.cr.n
+}
+
 // Close releases the decoder and the file.
 func (r *RunReader) Close() error {
 	r.zr.Close()
 	return r.f.Close()
+}
+
+// Remove deletes the run file; the merge calls it once a run is fully
+// consumed and closed.
+func (r *RunReader) Remove() error {
+	return os.Remove(r.path)
 }
