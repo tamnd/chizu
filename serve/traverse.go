@@ -4,11 +4,13 @@
 // weighting arrives with doc 08 at C3). Both algorithms consult the
 // same resident block-max bounds, so the choice changes visit order,
 // never I/O class. Rank safety is exact: every traversal returns the
-// true top-K score set of the term union.
+// true top-K score set of the term union. The traversals run on Worker
+// scratch and the returned hits alias it, valid until the worker's
+// next query.
 
 package serve
 
-import "sort"
+import "slices"
 
 // bmwMaxTerms is the hybrid crossover measured by lab 04 (PR #53): BMW
 // wins blocks decoded and postings scored at every query length but
@@ -23,15 +25,16 @@ type Hit struct {
 	Score int32
 }
 
-// Traverse runs the hybrid choice table over the cursors: block-max
-// WAND at bmwMaxTerms and below, MaxScore above. deleted is the doc 07
-// exclusion check (tombstones); nil means nothing is excluded. Hits
-// come back score-descending, docid-ascending.
-func Traverse(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hit, error) {
-	if len(cur) <= bmwMaxTerms {
-		return TraverseBMW(cur, k, deleted)
+// Traverse runs the hybrid choice table over the worker's open
+// cursors: block-max WAND at bmwMaxTerms and below, MaxScore above.
+// deleted is the doc 07 exclusion check (tombstones); nil means
+// nothing is excluded. Hits come back score-descending,
+// docid-ascending, aliasing worker scratch.
+func (w *Worker) Traverse(k int, deleted func(uint32) bool) ([]Hit, error) {
+	if w.open <= bmwMaxTerms {
+		return w.TraverseBMW(k, deleted)
 	}
-	return TraverseMaxScore(cur, k, deleted)
+	return w.TraverseMaxScore(k, deleted)
 }
 
 // TraverseMaxScore is the term-partitioned traversal: terms sort by
@@ -39,17 +42,20 @@ func Traverse(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hit, error
 // the threshold) drives the docid union, and non-essential terms are
 // probed from the largest bound down with block-max tightening, so a
 // doc drops as soon as the credit left cannot reach the threshold.
-func TraverseMaxScore(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hit, error) {
-	ts := make([]*TermCursor, len(cur))
-	copy(ts, cur)
-	sort.Slice(ts, func(i, j int) bool { return ts[i].Bound() < ts[j].Bound() })
+func (w *Worker) TraverseMaxScore(k int, deleted func(uint32) bool) ([]Hit, error) {
+	ts := w.byBound[:0]
+	for i := range w.cursors() {
+		ts = append(ts, &w.slots[i])
+	}
+	slices.SortFunc(ts, func(a, b *TermCursor) int { return int(a.Bound()) - int(b.Bound()) })
 	// prefix[i] is the summed bound of terms 0..i-1, the most the
 	// non-essential side can add when the partition sits at i.
-	prefix := make([]int32, len(ts)+1)
+	prefix := w.prefix[:len(ts)+1]
+	prefix[0] = 0
 	for i, c := range ts {
 		prefix[i+1] = prefix[i] + int32(c.Bound())
 	}
-	h := topHeap{k: k}
+	h := topHeap{k: k, hits: w.hits[:0]}
 	for {
 		theta := h.threshold()
 		part := 0
@@ -97,6 +103,7 @@ func TraverseMaxScore(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hi
 			h.offer(d, s)
 		}
 	}
+	w.hits = h.hits
 	return h.sorted(), cursorErr(ts)
 }
 
@@ -105,12 +112,23 @@ func TraverseMaxScore(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hi
 // pivot's block bounds are re-checked before any decode; a rejected
 // pivot advances the leading cursor past its block or to the pivot,
 // whichever is nearer.
-func TraverseBMW(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hit, error) {
-	ts := make([]*TermCursor, len(cur))
-	copy(ts, cur)
-	h := topHeap{k: k}
+func (w *Worker) TraverseBMW(k int, deleted func(uint32) bool) ([]Hit, error) {
+	ts := w.byDocid[:0]
+	for i := range w.cursors() {
+		ts = append(ts, &w.slots[i])
+	}
+	h := topHeap{k: k, hits: w.hits[:0]}
 	for {
-		sort.Slice(ts, func(i, j int) bool { return ts[i].Docid() < ts[j].Docid() })
+		slices.SortFunc(ts, func(a, b *TermCursor) int {
+			da, db := a.Docid(), b.Docid()
+			switch {
+			case da < db:
+				return -1
+			case da > db:
+				return 1
+			}
+			return 0
+		})
 		theta := h.threshold()
 		var acc int32
 		pivot := -1
@@ -160,6 +178,7 @@ func TraverseBMW(cur []*TermCursor, k int, deleted func(uint32) bool) ([]Hit, er
 			ts[0].Advance(pd)
 		}
 	}
+	w.hits = h.hits
 	return h.sorted(), cursorErr(ts)
 }
 
@@ -175,7 +194,8 @@ func cursorErr(ts []*TermCursor) error {
 }
 
 // topHeap is a bounded min-heap of the best k hits by score; its floor
-// is the shared threshold both traversals prune against.
+// is the shared threshold both traversals prune against. The backing
+// slice is worker scratch handed in at construction.
 type topHeap struct {
 	k    int
 	hits []Hit
@@ -230,11 +250,17 @@ func (h *topHeap) offer(d uint32, s int32) {
 // docid ascending.
 func (h *topHeap) sorted() []Hit {
 	out := h.hits
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
+	slices.SortFunc(out, func(a, b Hit) int {
+		if a.Score != b.Score {
+			return int(b.Score - a.Score)
 		}
-		return out[i].Docid < out[j].Docid
+		switch {
+		case a.Docid < b.Docid:
+			return -1
+		case a.Docid > b.Docid:
+			return 1
+		}
+		return 0
 	})
 	return out
 }

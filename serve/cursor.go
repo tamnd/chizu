@@ -1,11 +1,13 @@
 // Term cursors, doc 07 section 3: a cursor walks one term's postings
-// in docid order over the doc 05 skip hierarchy. The resident L1 array
-// answers docid targeting and block-max bounds without touching the
-// postings band; a block's bytes are pread through the pool and
-// decoded only when the traversal actually positions inside it, so the
-// blocks a bound check kills are never read. This slice fetches blocks
-// synchronously; the read planner slice batches the preads without
-// changing this contract.
+// in docid order over the doc 05 skip hierarchy. The raw skip region
+// (arena bytes, read once at OpenTerm) answers docid targeting and
+// block-max bounds without touching the postings band; a block's bytes
+// are pread into the cursor's own aligned buffer and decoded only when
+// the traversal actually positions inside it, so the blocks a bound
+// check kills are never read. Cursors live in Worker slots and hold no
+// heap allocations of their own (doc 07 section 9). This slice fetches
+// blocks synchronously; the read planner slice batches the preads
+// without changing this contract.
 
 package serve
 
@@ -39,17 +41,19 @@ type TraverseStats struct {
 // the cause, so traversal loops stay branch-light.
 type TermCursor struct {
 	m     *Mount
-	pool  *BufPool
 	stats *TraverseStats
+	buf   []byte // slot-owned aligned pread buffer
 	err   error
 
 	e            hotfmt.DictEntry
-	l1           []hotfmt.SkipL1
+	inlineArr    [4]hotfmt.InlinePosting // backs e.Inline for df<=4 terms
+	skips        []byte                  // raw skip region in the worker arena
+	nb           int                     // L1 entry count in skips
 	inline       []hotfmt.InlinePosting
 	postingsBase uint64
 	bound        uint8
 
-	blk     int // current block index in l1
+	blk     int // current block index
 	i       int // position inside the decoded block or the inline list
 	decoded int // block index the buffers hold, -1 before the first read
 	n       int // entries in the decoded block
@@ -59,46 +63,8 @@ type TermCursor struct {
 	masks   [hotfmt.PostingsBlockLen]uint8
 }
 
-// OpenTerm looks the term up and builds its cursor: inline entries
-// carry their postings in the dictionary, everything else preads its
-// skip region once and keeps the L1 array for the walk. The second
-// return is false when the term is absent from the shard.
-func (m *Mount) OpenTerm(term []byte, pool *BufPool, stats *TraverseStats) (*TermCursor, bool, error) {
-	e, ok, err := m.Dict.Lookup(term)
-	if err != nil || !ok {
-		return nil, ok, err
-	}
-	c := &TermCursor{m: m, pool: pool, stats: stats, e: e, decoded: -1}
-	if len(e.Inline) > 0 {
-		c.inline = e.Inline
-		for _, p := range e.Inline {
-			c.bound = max(c.bound, p.TF)
-		}
-		return c, true, nil
-	}
-	skipsOff, _, err := m.Shard.Band(hotfmt.BandSkips)
-	if err != nil {
-		return nil, true, err
-	}
-	postingsOff, _, err := m.Shard.Band(hotfmt.BandPostings)
-	if err != nil {
-		return nil, true, err
-	}
-	region := make([]byte, hotfmt.SkipRegionSize(e.DF))
-	if _, err := m.f.ReadAt(region, int64(skipsOff+e.SkipOff)); err != nil {
-		return nil, true, fmt.Errorf("serve: skip region pread: %w", err)
-	}
-	l1, _, _, err := hotfmt.ParseSkips(region, e.DF)
-	if err != nil {
-		return nil, true, err
-	}
-	c.l1 = l1
-	c.postingsBase = postingsOff + e.PostingsOff
-	for _, s := range l1 {
-		c.bound = max(c.bound, s.Impact)
-	}
-	return c, true, nil
-}
+// l1 reads L1 entry j straight from the raw region.
+func (c *TermCursor) l1(j int) hotfmt.SkipL1 { return hotfmt.SkipL1At(c.skips, j) }
 
 // Bound is the term's max quantized impact, the MaxScore partitioning
 // and WAND pivot currency.
@@ -119,6 +85,8 @@ func (c *TermCursor) fail(err error) {
 }
 
 // ensure decodes the current block if the buffers hold another one.
+// The lastDocid cross-check against the skip entry is the lazy
+// validation of the raw region: OpenTerm no longer parses it whole.
 func (c *TermCursor) ensure() bool {
 	if c.done {
 		return false
@@ -126,36 +94,34 @@ func (c *TermCursor) ensure() bool {
 	if c.inline != nil || c.decoded == c.blk {
 		return true
 	}
+	cur := c.l1(c.blk)
 	end := uint64(c.e.PostingsLen)
-	if c.blk+1 < len(c.l1) {
-		end = c.l1[c.blk+1].Off
+	if c.blk+1 < c.nb {
+		end = c.l1(c.blk + 1).Off
 	}
-	length := int(end - c.l1[c.blk].Off)
-	if length <= 0 || length > c.pool.Size() {
+	length := int(end - cur.Off)
+	if length <= 0 || length > len(c.buf) {
 		c.fail(fmt.Errorf("serve: postings block of %d bytes", length))
 		return false
 	}
-	buf := c.pool.Get()
-	n, err := c.m.f.ReadAt(buf[:length], int64(c.postingsBase+c.l1[c.blk].Off))
+	n, err := c.m.f.ReadAt(c.buf[:length], int64(c.postingsBase+cur.Off))
 	if err == io.EOF && n == length {
 		err = nil
 	}
 	if err != nil {
-		c.pool.Put(buf)
 		c.fail(fmt.Errorf("serve: postings block pread: %w", err))
 		return false
 	}
 	prev := int64(-1)
 	if c.blk > 0 {
-		prev = int64(c.l1[c.blk-1].LastDocid)
+		prev = int64(c.l1(c.blk - 1).LastDocid)
 	}
-	b, used, err := hotfmt.DecodePostingsBlock(buf[:length], prev, c.docids[:], c.impacts[:], c.masks[:])
-	c.pool.Put(buf)
+	b, used, err := hotfmt.DecodePostingsBlock(c.buf[:length], prev, c.docids[:], c.impacts[:], c.masks[:])
 	if err != nil {
 		c.fail(err)
 		return false
 	}
-	if used != length || b.LastDocid != c.l1[c.blk].LastDocid {
+	if used != length || b.LastDocid != cur.LastDocid {
 		c.fail(errors.New("serve: postings block disagrees with its skip entry"))
 		return false
 	}
@@ -201,14 +167,14 @@ func (c *TermCursor) Next() {
 	if c.decoded == c.blk && c.i >= c.n {
 		c.blk++
 		c.i = 0
-		if c.blk >= len(c.l1) {
+		if c.blk >= c.nb {
 			c.done = true
 		}
 	}
 }
 
 // Advance moves to the first posting with docid >= d. Blocks between
-// the current position and the target are skipped by the L1 array
+// the current position and the target are skipped by the L1 entries
 // without a read; only the landed block decodes.
 func (c *TermCursor) Advance(d uint32) {
 	if c.done {
@@ -223,10 +189,10 @@ func (c *TermCursor) Advance(d uint32) {
 		}
 		return
 	}
-	t := c.blk + sort.Search(len(c.l1)-c.blk, func(j int) bool {
-		return c.l1[c.blk+j].LastDocid >= d
+	t := c.blk + sort.Search(c.nb-c.blk, func(j int) bool {
+		return c.l1(c.blk+j).LastDocid >= d
 	})
-	if t >= len(c.l1) {
+	if t >= c.nb {
 		c.done = true
 		return
 	}
@@ -267,13 +233,13 @@ func (c *TermCursor) BlockBound(d uint32) uint8 {
 		}
 		return m
 	}
-	t := c.blk + sort.Search(len(c.l1)-c.blk, func(j int) bool {
-		return c.l1[c.blk+j].LastDocid >= d
+	t := c.blk + sort.Search(c.nb-c.blk, func(j int) bool {
+		return c.l1(c.blk+j).LastDocid >= d
 	})
-	if t >= len(c.l1) {
+	if t >= c.nb {
 		return 0
 	}
-	return c.l1[t].Impact
+	return c.l1(t).Impact
 }
 
 // shallowNext is the first docid past the cursor's current block, the
@@ -283,5 +249,5 @@ func (c *TermCursor) shallowNext() uint32 {
 	if c.done || c.inline != nil {
 		return docidExhausted
 	}
-	return c.l1[c.blk].LastDocid + 1
+	return c.l1(c.blk).LastDocid + 1
 }
