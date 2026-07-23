@@ -153,7 +153,7 @@ func fetchOne(base, path, keep string) (int64, error) {
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("status %s", resp.Status)
 	}
-	var w io.Writer = io.Discard
+	w := io.Discard
 	if keep != "" {
 		f, err := os.Create(filepath.Join(keep, filepath.Base(path)))
 		if err != nil {
