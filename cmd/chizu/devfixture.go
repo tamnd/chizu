@@ -19,12 +19,14 @@ import (
 )
 
 // The fixture vertical: `chizu dev -fixture N` builds an N-doc fixture
-// shard through the real pipeline, uploads it, reopens the local file,
-// and answers a hand-rolled term lookup from it. This is the C1a
-// exit-gate shape (doc 10 section 1): the corpus enters the build only
-// as sealed .cold segment bytes, the .hot lives on disk end to end,
-// and the lookup preads postings straight from the file, so RAM holds
-// the dictionary and docvalues and nothing else.
+// shard through the real pipeline, reopens the local file, answers a
+// hand-rolled term lookup from it, then uploads it with the consuming
+// path. This is the C1a exit-gate shape (doc 10 section 1): the corpus
+// enters the build only as sealed .cold segment bytes, the .hot lives
+// on disk end to end, and the lookup preads postings straight from the
+// file, so RAM holds the dictionary and docvalues and nothing else.
+// Disk peaks at one shard copy: the merge punches consumed run
+// prefixes and the upload punches acknowledged parts.
 
 const (
 	devFixtureSeed    = 2107
@@ -56,15 +58,22 @@ func devFixture(ctx context.Context, client *s3c.Client, prefix, scratch string,
 	}
 	fmt.Printf("fixture build: %d docs -> %s (%d bytes, sha256 %x)\n", n, hotPath, st.Size(), sum)
 
-	shardKey := prefix + "hot/s0000/0000000000000001.hot"
-	if err := build.UploadHot(ctx, client, shardKey, hotPath, build.DefaultPartSize); err != nil {
-		return err
-	}
-	fmt.Printf("fixture upload: %s\n", shardKey)
-
+	// Verify and serve from the scratch file first, then upload with
+	// the consuming path: the bucket copy grows as the scratch copy's
+	// blocks are punched away, so a shard's disk cost peaks at one
+	// copy, not two. At 100M docs on the gate box that is the
+	// difference between fitting and not.
 	if err := devFixtureCheck(hotPath, c, n); err != nil {
 		return err
 	}
+	shardKey := prefix + "hot/s0000/0000000000000001.hot"
+	if err := build.UploadHotConsume(ctx, client, shardKey, hotPath, build.DefaultPartSize); err != nil {
+		return err
+	}
+	if err := os.Remove(hotPath); err != nil {
+		return err
+	}
+	fmt.Printf("fixture upload: %s (scratch copy consumed)\n", shardKey)
 	return nil
 }
 

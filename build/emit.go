@@ -243,6 +243,7 @@ func Emit(w io.Writer, out *ShardOutput, cfg *EmitConfig) (err error) {
 		if nerr := r.Next(&it.rec); nerr != nil {
 			_ = r.Close()
 			if nerr == io.EOF {
+				_ = r.Remove()
 				continue
 			}
 			return nerr
@@ -257,9 +258,12 @@ func Emit(w io.Writer, out *ShardOutput, cfg *EmitConfig) (err error) {
 		}
 		switch nerr := it.r.Next(&it.rec); nerr {
 		case nil:
+			it.r.Reclaim()
 			heap.Fix(&h, 0)
 		case io.EOF:
-			_ = heap.Pop(&h).(*mergeItem).r.Close()
+			done := heap.Pop(&h).(*mergeItem).r
+			_ = done.Close()
+			_ = done.Remove()
 		default:
 			return nerr
 		}

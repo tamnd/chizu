@@ -20,10 +20,26 @@ const minPartSize = 5 << 20
 // multipart upload. Parts are read sequentially, so memory stays at
 // one part.
 func UploadHot(ctx context.Context, c *s3c.Client, key, path string, partSize int) error {
+	return uploadHot(ctx, c, key, path, partSize, false)
+}
+
+// UploadHotConsume is UploadHot for a source the caller is done with:
+// each part's disk space is hole-punched once the bucket acknowledges
+// it, so the local and remote copies never coexist in full. The file
+// is garbage afterward; the caller removes it.
+func UploadHotConsume(ctx context.Context, c *s3c.Client, key, path string, partSize int) error {
+	return uploadHot(ctx, c, key, path, partSize, true)
+}
+
+func uploadHot(ctx context.Context, c *s3c.Client, key, path string, partSize int, consume bool) error {
 	if partSize < minPartSize {
 		return errors.New("build: part size below the S3 minimum")
 	}
-	f, err := os.Open(path)
+	mode := os.O_RDONLY
+	if consume {
+		mode = os.O_RDWR
+	}
+	f, err := os.OpenFile(path, mode, 0)
 	if err != nil {
 		return err
 	}
@@ -35,6 +51,8 @@ func UploadHot(ctx context.Context, c *s3c.Client, key, path string, partSize in
 	}
 	var parts []s3c.CompletedPart
 	buf := make([]byte, partSize)
+	var off int64
+	punch := consume
 	for n := 1; ; n++ {
 		k, rerr := io.ReadFull(f, buf)
 		if rerr == io.EOF {
@@ -48,6 +66,12 @@ func UploadHot(ctx context.Context, c *s3c.Client, key, path string, partSize in
 			return perr
 		}
 		parts = append(parts, s3c.CompletedPart{PartNumber: n, ETag: etag})
+		if punch {
+			if err := punchHole(f.Fd(), off, int64(k)); err != nil {
+				punch = false
+			}
+		}
+		off += int64(k)
 		if rerr == io.ErrUnexpectedEOF {
 			break
 		}
