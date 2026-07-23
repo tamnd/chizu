@@ -190,7 +190,19 @@ func codecDict(c *blockCodec) []byte { return c.dict }
 // trainDict trains the 64 KiB shared dictionary on the text column. Small
 // or degenerate corpora fail training, and that is fine: the segment then
 // carries no dictionary and the dict columns fall back to plain zstd.
-func (w *PageSegmentWriter) trainDict() []byte {
+// The builder also panics outright on inputs it dislikes (seen on real
+// Common Crawl text by the zstd-dict lab, slice bounds out of range in
+// v1.19.0), so a failed build is caught either way.
+func (w *PageSegmentWriter) trainDict() (d []byte) {
+	defer func() {
+		if recover() != nil {
+			d = nil
+		}
+	}()
+	return w.trainDictInner()
+}
+
+func (w *PageSegmentWriter) trainDictInner() []byte {
 	var samples [][]byte
 	for i := range w.rows {
 		if t := w.rows[i].Text; t != "" {
