@@ -220,3 +220,36 @@ func FuzzOpenDict(f *testing.F) {
 		}
 	})
 }
+
+func TestLookupInto(t *testing.T) {
+	terms := fixtureTerms(200)
+	d, err := OpenDict(buildDict(t, terms))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inline := make([]InlinePosting, 0, 4)
+	for i, term := range terms {
+		want, ok, err := d.Lookup(term)
+		if err != nil || !ok {
+			t.Fatalf("Lookup(%q): ok=%v err=%v", term, ok, err)
+		}
+		var got DictEntry
+		ok, err = d.LookupInto(term, &got, inline)
+		if err != nil || !ok {
+			t.Fatalf("LookupInto(%q): ok=%v err=%v", term, ok, err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("term %d %q: entries diverge\nlookup     %+v\nlookupinto %+v", i, term, want, got)
+		}
+	}
+	for _, miss := range [][]byte{[]byte("aaaa"), []byte("term0100a"), []byte("zzzz")} {
+		var e DictEntry
+		if ok, err := d.LookupInto(miss, &e, inline); ok || err != nil {
+			t.Fatalf("LookupInto(%q): ok=%v err=%v", miss, ok, err)
+		}
+	}
+	var e DictEntry
+	if _, err := d.LookupInto(terms[0], &e, nil); err == nil {
+		t.Fatal("inline entry accepted a nil inline buffer")
+	}
+}

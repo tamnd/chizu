@@ -89,6 +89,30 @@ func EncodeSkips(dst []byte, l1 []SkipL1, posOffs []uint64) ([]byte, error) {
 	return dst, nil
 }
 
+// SkipL1At reads L1 entry i straight out of a raw skip region without
+// materializing the arrays, the serving plane's allocation-free path
+// (doc 07 section 9). The caller owns bounds: i below SkipCounts's nb.
+func SkipL1At(region []byte, i int) SkipL1 {
+	e := region[i*skipL1Size:]
+	return SkipL1{
+		LastDocid: binary.LittleEndian.Uint32(e),
+		Impact:    e[4],
+		Off:       u40(e[5:]),
+	}
+}
+
+// SkipBound is the term's max impact read from the L2 level, 32x fewer
+// entries than scanning L1.
+func SkipBound(region []byte, df uint32) uint8 {
+	nb, nl2 := SkipCounts(df)
+	base := nb * (skipL1Size + skipPosSize)
+	var m uint8
+	for g := range nl2 {
+		m = max(m, region[base+g*skipL2Size+4])
+	}
+	return m
+}
+
 // ParseSkips decodes a term's whole skip region for the given df and
 // checks that the L2 level really is the derivation of L1.
 func ParseSkips(data []byte, df uint32) ([]SkipL1, []uint64, []SkipL2, error) {

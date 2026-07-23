@@ -105,16 +105,28 @@ func appendDictEntry(dst []byte, e *DictEntry) []byte {
 }
 
 func parseDictEntry(b []byte) (DictEntry, error) {
-	e := DictEntry{DF: binary.LittleEndian.Uint32(b)}
+	var e DictEntry
+	err := parseDictEntryInto(b, &e, make([]InlinePosting, 0, 4))
+	return e, err
+}
+
+// parseDictEntryInto decodes an entry into caller storage; an inlined
+// entry's postings land in inline (capacity 4), which e.Inline then
+// aliases.
+func parseDictEntryInto(b []byte, e *DictEntry, inline []InlinePosting) error {
+	*e = DictEntry{DF: binary.LittleEndian.Uint32(b)}
 	flags := b[28]
 	if flags&^dictInlined != 0 || b[29] != 0 || b[30] != 0 || b[31] != 0 {
-		return e, errors.New("hotfmt: dictionary entry padding not zero")
+		return errors.New("hotfmt: dictionary entry padding not zero")
 	}
 	if flags&dictInlined != 0 {
 		if e.DF == 0 || e.DF > 4 {
-			return e, fmt.Errorf("hotfmt: inlined entry with df %d", e.DF)
+			return fmt.Errorf("hotfmt: inlined entry with df %d", e.DF)
 		}
-		e.Inline = make([]InlinePosting, e.DF)
+		if cap(inline) < int(e.DF) {
+			return errors.New("hotfmt: inline buffer too small")
+		}
+		e.Inline = inline[:e.DF]
 		for i := range e.Inline {
 			e.Inline[i] = InlinePosting{
 				Docid: binary.LittleEndian.Uint32(b[4+6*i:]),
@@ -124,7 +136,7 @@ func parseDictEntry(b []byte) (DictEntry, error) {
 		}
 		for _, spare := range b[4+6*e.DF : 28] {
 			if spare != 0 {
-				return e, errors.New("hotfmt: inline spare bytes not zero")
+				return errors.New("hotfmt: inline spare bytes not zero")
 			}
 		}
 	} else {
@@ -133,13 +145,10 @@ func parseDictEntry(b []byte) (DictEntry, error) {
 		e.PostingsLen = binary.LittleEndian.Uint32(b[16:])
 		e.SkipOff = u48(b[20:])
 		if b[26] != 0 || b[27] != 0 {
-			return e, errors.New("hotfmt: dictionary entry spare bytes not zero")
+			return errors.New("hotfmt: dictionary entry spare bytes not zero")
 		}
 	}
-	if err := e.validate(); err != nil {
-		return e, err
-	}
-	return e, nil
+	return e.validate()
 }
 
 // DictWriter builds the dictionary band. Terms must arrive in strictly
@@ -299,6 +308,75 @@ func (d *Dict) Lookup(term []byte) (DictEntry, bool, error) {
 		}
 	})
 	return found, ok, err
+}
+
+// LookupInto is Lookup for the allocation-free serving path (doc 07
+// section 9): the front-coded walk decodes on the stack, e fills in
+// place, and a matching inlined entry's postings land in inline
+// (capacity 4), which e.Inline then aliases. The walk also stops at
+// the first term past the target instead of scanning the whole block.
+func (d *Dict) LookupInto(term []byte, e *DictEntry, inline []InlinePosting) (bool, error) {
+	b := sort.Search(len(d.blockOff), func(i int) bool {
+		return bytes.Compare(d.first[i], term) > 0
+	}) - 1
+	if b < 0 {
+		return false, nil
+	}
+	n := dictBlockTerms
+	if b == len(d.blockOff)-1 {
+		n = int(d.nterms - uint64(b)*dictBlockTerms)
+	}
+	area := d.data[d.blockOff[b]:d.indexOff]
+	next := d.indexOff
+	if b+1 < len(d.blockOff) {
+		next = d.blockOff[b+1]
+	}
+	// The entry array ends where the next block starts, so its offset
+	// is known without walking every term first.
+	entriesAt := int(next-d.blockOff[b]) - n*dictEntrySize
+	if entriesAt < 1 || entriesAt+n*dictEntrySize > len(area) {
+		return false, errors.New("hotfmt: dictionary block smaller than its entries")
+	}
+	var buf [maxTermLen]byte
+	tl := 0
+	pos := 0
+	for i := range n {
+		if i == 0 {
+			l := int(area[pos])
+			if l == 0 || l > maxTermLen || pos+1+l > entriesAt {
+				return false, errors.New("hotfmt: dictionary term malformed")
+			}
+			copy(buf[:], area[pos+1:pos+1+l])
+			tl = l
+			pos += 1 + l
+			if !bytes.Equal(buf[:tl], d.first[b]) {
+				return false, errors.New("hotfmt: block first term disagrees with index")
+			}
+		} else {
+			if pos+2 > entriesAt {
+				return false, errors.New("hotfmt: dictionary block truncated")
+			}
+			lcp, sl := int(area[pos]), int(area[pos+1])
+			pos += 2
+			if lcp > tl || sl == 0 || lcp+sl > maxTermLen || pos+sl > entriesAt {
+				return false, errors.New("hotfmt: dictionary term malformed")
+			}
+			suffix := area[pos : pos+sl]
+			pos += sl
+			if lcp < tl && suffix[0] <= buf[lcp] {
+				return false, errors.New("hotfmt: dictionary term not front-coded canonically")
+			}
+			copy(buf[lcp:], suffix)
+			tl = lcp + sl
+		}
+		switch bytes.Compare(buf[:tl], term) {
+		case 0:
+			return true, parseDictEntryInto(area[entriesAt+i*dictEntrySize:], e, inline)
+		case 1:
+			return false, nil
+		}
+	}
+	return false, nil
 }
 
 // Walk visits every term in order; the merge path and the fuzz

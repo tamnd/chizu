@@ -104,3 +104,23 @@ func FuzzParseSkips(f *testing.F) {
 		}
 	})
 }
+
+func TestSkipRawAccessors(t *testing.T) {
+	for _, df := range []uint32{1, 127, 128, 129, 128*32 + 1, 500000} {
+		l1, pos := fixtureSkips(df)
+		region, err := EncodeSkips(nil, l1, pos)
+		if err != nil {
+			t.Fatalf("df=%d: %v", df, err)
+		}
+		var bound uint8
+		for i := range l1 {
+			if got := SkipL1At(region, i); got != l1[i] {
+				t.Fatalf("df=%d entry %d: %+v, want %+v", df, i, got, l1[i])
+			}
+			bound = max(bound, l1[i].Impact)
+		}
+		if got := SkipBound(region, df); got != bound {
+			t.Fatalf("df=%d: bound %d, want %d", df, got, bound)
+		}
+	}
+}
