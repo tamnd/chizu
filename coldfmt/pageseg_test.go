@@ -287,3 +287,31 @@ func FuzzOpenPageSegment(f *testing.F) {
 		}
 	})
 }
+
+// The klauspost dict builder panics outright on some real corpora (the
+// zstd-dict lab hit slice-bounds panics on Common Crawl text at every
+// parameter combination, and identical samples reproduce it cheaply).
+// Seal must survive that and fall back to no dictionary.
+func TestPageSegmentDictPanicFallback(t *testing.T) {
+	body := strings.Repeat("the quick brown fox jumps over the lazy dog ", 12)
+	var rows []PageRow
+	for i := range 64 {
+		rows = append(rows, PageRow{FetchMS: uint64(i), Text: body, LawVer: 1})
+	}
+	data, err := sealRows(rows, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenPageSegment(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.Rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[10].Text != body {
+		t.Fatal("row text mismatch after dictionary fallback")
+	}
+}
