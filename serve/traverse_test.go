@@ -182,25 +182,23 @@ func travMount(t *testing.T, terms []travTerm) *Mount {
 	return m
 }
 
-func openCursors(t *testing.T, m *Mount, terms []travTerm, names []string, stats *TraverseStats) []*TermCursor {
+// openWorker resets the worker and opens the query's cursors.
+func openWorker(t *testing.T, w *Worker, m *Mount, terms []travTerm, names []string) {
 	t.Helper()
-	pool := NewBufPool(4096)
 	byName := map[string]travTerm{}
 	for _, tt := range terms {
 		byName[tt.name] = tt
 	}
-	var cur []*TermCursor
+	w.Reset()
 	for _, name := range names {
-		c, ok, err := m.OpenTerm([]byte(name), pool, stats)
+		c, ok, err := w.OpenTerm(m, []byte(name))
 		if err != nil || !ok {
 			t.Fatalf("OpenTerm(%s): ok=%v err=%v", name, ok, err)
 		}
 		if want := uint32(len(byName[name].ps)); c.DF() != want {
 			t.Fatalf("%s df %d, want %d", name, c.DF(), want)
 		}
-		cur = append(cur, c)
 	}
-	return cur
 }
 
 // brute computes the exact top-k of the term union, honoring deleted.
@@ -251,9 +249,10 @@ func sameScores(gold, got []Hit) bool {
 func TestCursorWalk(t *testing.T) {
 	terms := genTravTerms(2107)
 	m := travMount(t, terms)
+	w := NewWorker()
 	for _, tt := range terms {
-		var stats TraverseStats
-		cur := openCursors(t, m, terms, []string{tt.name}, &stats)[0]
+		openWorker(t, w, m, terms, []string{tt.name})
+		cur := &w.cursors()[0]
 		for i, p := range tt.ps {
 			if got := cur.Docid(); got != p.Docid {
 				t.Fatalf("%s posting %d: docid %d, want %d", tt.name, i, got, p.Docid)
@@ -276,9 +275,10 @@ func TestCursorAdvance(t *testing.T) {
 	terms := genTravTerms(2107)
 	m := travMount(t, terms)
 	rng := rand.New(rand.NewSource(7))
+	w := NewWorker()
 	for _, tt := range terms {
-		var stats TraverseStats
-		cur := openCursors(t, m, terms, []string{tt.name}, &stats)[0]
+		openWorker(t, w, m, terms, []string{tt.name})
+		cur := &w.cursors()[0]
 		target := uint32(0)
 		for range 40 {
 			target += uint32(rng.Intn(travDocs / 20))
@@ -325,13 +325,14 @@ func TestTraverseRankSafety(t *testing.T) {
 		sort.Strings(qn)
 		for _, k := range []int{10, 100} {
 			gold := brute(terms, qn, k, nil)
-			for algo, run := range map[string]func([]*TermCursor, int, func(uint32) bool) ([]Hit, error){
-				"maxscore": TraverseMaxScore,
-				"bmw":      TraverseBMW,
-				"hybrid":   Traverse,
+			for algo, run := range map[string]func(*Worker, int, func(uint32) bool) ([]Hit, error){
+				"maxscore": (*Worker).TraverseMaxScore,
+				"bmw":      (*Worker).TraverseBMW,
+				"hybrid":   (*Worker).Traverse,
 			} {
-				var stats TraverseStats
-				got, err := run(openCursors(t, m, terms, qn, &stats), k, nil)
+				w := NewWorker()
+				openWorker(t, w, m, terms, qn)
+				got, err := run(w, k, nil)
 				if err != nil {
 					t.Fatalf("%s %v k=%d: %v", algo, qn, k, err)
 				}
@@ -350,8 +351,9 @@ func TestTraverseDeleted(t *testing.T) {
 	deleted := func(d uint32) bool { return d%7 == 0 }
 	qn := []string{"t00", "t04", "t09"}
 	gold := brute(terms, qn, 50, deleted)
-	var stats TraverseStats
-	got, err := Traverse(openCursors(t, m, terms, qn, &stats), 50, deleted)
+	w := NewWorker()
+	openWorker(t, w, m, terms, qn)
+	got, err := w.Traverse(50, deleted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,32 +382,68 @@ func TestTraversePrunes(t *testing.T) {
 			total += (len(tt.ps) + hotfmt.PostingsBlockLen - 1) / hotfmt.PostingsBlockLen
 		}
 	}
-	var stats TraverseStats
-	hits, err := Traverse(openCursors(t, m, terms, qn, &stats), 10, nil)
+	w := NewWorker()
+	openWorker(t, w, m, terms, qn)
+	hits, err := w.Traverse(10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 10 {
 		t.Fatalf("got %d hits", len(hits))
 	}
-	if stats.Blocks >= int64(total) {
-		t.Fatalf("no pruning: %d blocks decoded of %d", stats.Blocks, total)
+	if w.Stats.Blocks >= int64(total) {
+		t.Fatalf("no pruning: %d blocks decoded of %d", w.Stats.Blocks, total)
 	}
-	if stats.Checks == 0 {
+	if w.Stats.Checks == 0 {
 		t.Fatal("no bound checks recorded")
 	}
-	t.Logf("blocks %d of %d, scored %d, checks %d", stats.Blocks, total, stats.Scored, stats.Checks)
+	t.Logf("blocks %d of %d, scored %d, checks %d", w.Stats.Blocks, total, w.Stats.Scored, w.Stats.Checks)
 }
 
 func TestOpenTermMissing(t *testing.T) {
 	terms := genTravTerms(2107)
 	m := travMount(t, terms)
-	var stats TraverseStats
-	c, ok, err := m.OpenTerm([]byte("nosuchterm"), NewBufPool(4096), &stats)
+	w := NewWorker()
+	c, ok, err := w.OpenTerm(m, []byte("nosuchterm"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok || c != nil {
 		t.Fatal("absent term produced a cursor")
+	}
+	if w.open != 0 {
+		t.Fatal("absent term consumed a slot")
+	}
+}
+
+// TestWorkerZeroAlloc is the doc 07 section 9 discipline as a number:
+// after one warmup query grows the worker to its high-water marks, the
+// steady query path allocates nothing.
+func TestWorkerZeroAlloc(t *testing.T) {
+	terms := genTravTerms(2107)
+	m := travMount(t, terms)
+	w := NewWorker()
+	queries := [][][]byte{
+		{[]byte("t01")},                // bmw single
+		{[]byte("t00"), []byte("t10")}, // bmw pair
+		{[]byte("t02"), []byte("t05"), []byte("t08"), []byte("t12")}, // maxscore
+		{[]byte("t03"), []byte("t11"), []byte("t13"), []byte("t14")}, // inline tail terms
+	}
+	run := func() {
+		for _, q := range queries {
+			w.Reset()
+			for _, term := range q {
+				if _, ok, err := w.OpenTerm(m, term); err != nil || !ok {
+					t.Fatalf("OpenTerm(%s): ok=%v err=%v", term, ok, err)
+				}
+			}
+			if _, err := w.Traverse(10, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	run() // warmup: arena and heap reach their high-water marks
+	if allocs := testing.AllocsPerRun(50, run); allocs != 0 {
+		t.Fatalf("steady query path allocates %.1f times per run, want 0", allocs)
 	}
 }
