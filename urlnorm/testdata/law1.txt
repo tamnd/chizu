@@ -1,0 +1,56 @@
+# Law-list v1 golden file: input TAB expected canonical, or TAB !err
+# for URLs the laws reject. Lines starting with # and blank lines are
+# skipped. Editing expectations here means the law changed: bump
+# LawVersion.
+
+# Law 1: scheme and host casing, default ports, fragments, punycode.
+HTTP://Example.COM/path	http://example.com/path
+https://EXAMPLE.com:443/	https://example.com/
+http://example.com:80/a	http://example.com/a
+http://example.com:8080/a	http://example.com:8080/a
+https://example.com/page#section-3	https://example.com/page
+https://example.com	https://example.com/
+https://münchen.de/straße	https://xn--mnchen-3ya.de/stra%C3%9Fe
+https://例え.jp/	https://xn--r8jz45g.jp/
+http://example.com./x	http://example.com/x
+http://user:pass@example.com/x	http://example.com/x
+http://192.168.0.1:80/x	http://192.168.0.1/x
+
+# Rejections: not fetchable under the laws.
+ftp://example.com/file	!err
+mailto:someone@example.com	!err
+javascript:alert(1)	!err
+https:///nopath	!err
+/relative/only	!err
+
+# Law 2: dot segments, duplicate slashes, percent-encoding.
+https://example.com/a/./b/../c	https://example.com/a/c
+https://example.com/a//b///c	https://example.com/a/b/c
+https://example.com/a/b/..	https://example.com/a/
+https://example.com/%41%42%43	https://example.com/ABC
+https://example.com/%7Euser	https://example.com/~user
+https://example.com/a%2fb	https://example.com/a%2Fb
+https://example.com/caf%c3%a9	https://example.com/caf%C3%A9
+https://example.com/a b	https://example.com/a%20b
+https://example.com/../../x	https://example.com/x
+
+# Law 3: query order preserved, trackers stripped.
+https://example.com/p?b=2&a=1	https://example.com/p?b=2&a=1
+https://example.com/p?utm_source=x&q=go&utm_medium=y	https://example.com/p?q=go
+https://example.com/p?gclid=abc123	https://example.com/p
+https://example.com/p?fbclid=xyz&id=7	https://example.com/p?id=7
+https://example.com/p?UTM_Campaign=Big&x=1	https://example.com/p?x=1
+https://example.com/p?a=1&&b=2	https://example.com/p?a=1&b=2
+https://example.com/p?q=caf%c3%a9	https://example.com/p?q=caf%C3%A9
+https://example.com/p?mc_eid=42&mc_cid=99	https://example.com/p
+https://example.com/search?q=a+b&lang=en	https://example.com/search?q=a+b&lang=en
+
+# Law 4: session ids in path and query.
+https://example.com/cart;jsessionid=1A2B3C4D/checkout	https://example.com/cart/checkout
+https://example.com/x;JSESSIONID=ABC	https://example.com/x
+https://example.com/p?PHPSESSID=deadbeef&item=3	https://example.com/p?item=3
+https://example.com/p?ASPSESSIONIDQQRST=XYZ&y=2	https://example.com/p?y=2
+https://example.com/p?session_id=5&sid_keep=1	https://example.com/p?sid_keep=1
+
+# Combined.
+HTTP://User@WWW.Example.COM:80/a/../shop;jsessionid=Z9//item?utm_source=mail&SKU=42#frag	http://www.example.com/shop/item?SKU=42
