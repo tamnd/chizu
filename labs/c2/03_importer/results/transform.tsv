@@ -1,0 +1,5 @@
+label	stage	files	pages	rawMB	wallS	usPerPage	pagesPerS
+server3	parse	2	40624	312.7	4.29	105.7	9460
+server3	canon	2	40624	312.7	4.64	114.2	8759
+server3	hash	2	40624	312.7	10.64	262.0	3817
+server3	encode	2	40624	312.7	49.21	1211.4	826
