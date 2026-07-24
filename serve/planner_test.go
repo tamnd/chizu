@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // plannerFile writes n bytes where byte i is a function of i, so any
@@ -132,10 +134,16 @@ func TestPlannerOversizeRequest(t *testing.T) {
 }
 
 // countingReader proves reads run concurrently: it tracks the high
-// water mark of simultaneous ReadAt calls.
+// water mark of simultaneous ReadAt calls, and it parks every read
+// until two are inside at once, so the proof cannot flake on a
+// starved runner where fast page-cache reads would complete serially.
+// A serial pool times out the park and fails the high-water check
+// with the honest number instead of deadlocking.
 type countingReader struct {
 	f        *os.File
 	cur, max atomic.Int32
+	once     sync.Once
+	both     chan struct{}
 }
 
 func (c *countingReader) ReadAt(b []byte, off int64) (int, error) {
@@ -146,12 +154,19 @@ func (c *countingReader) ReadAt(b []byte, off int64) (int, error) {
 			break
 		}
 	}
+	if n >= 2 {
+		c.once.Do(func() { close(c.both) })
+	}
+	select {
+	case <-c.both:
+	case <-time.After(5 * time.Second):
+	}
 	defer c.cur.Add(-1)
 	return c.f.ReadAt(b, off)
 }
 
 func TestPlannerReachesDepth(t *testing.T) {
-	cr := &countingReader{f: plannerFile(t, 1<<22)}
+	cr := &countingReader{f: plannerFile(t, 1<<22), both: make(chan struct{})}
 	pool := NewBufPool(ReadUnit)
 	p := NewPlanner(cr, pool, 8)
 	defer p.Close()
