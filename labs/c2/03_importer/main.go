@@ -35,6 +35,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,8 +187,24 @@ func transformCmd(args []string) error {
 	wet := fs.String("wet", "", "comma list of local .wet.gz files")
 	reps := fs.Int("reps", 3, "timed passes per stage")
 	label := fs.String("label", "local", "row label, name the host")
+	profile := fs.String("cpuprofile", "", "write a CPU profile of the timed passes")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// The stage table is a per-core decomposition and coldfmt's zstd
+	// encoder goes GOMAXPROCS-wide inside EncodeAll, so without this pin
+	// the encode stage borrows idle cores and the P5 row lies.
+	runtime.GOMAXPROCS(1)
+	if *profile != "" {
+		f, err := os.Create(*profile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			return err
+		}
+		defer pprof.StopCPUProfile()
 	}
 	if *wet == "" {
 		return errors.New("transform needs -wet")
@@ -357,19 +375,36 @@ func stageEncode(files [][]byte) (int, int64, error) {
 
 // simhash is the 64-bit Charikar sketch over whitespace tokens with
 // FNV-1a features, the same shape the doc 06 near-dup pass computes.
+// Kept byte-identical to crawl/simhash.go: the SWAR vote packs four
+// 16-bit lanes per word, a nibble table adds 0 or 2 per lane, and the
+// 2*ones-n vote applies at flush before any lane can reach 16 bits.
 func simhash(text []byte) uint64 {
 	const offset64, prime64 = 14695981039346656037, 1099511628211
 	var acc [64]int32
+	var lanes [16]uint64
+	chunk := int32(0)
+	flush := func() {
+		for w := range lanes {
+			for l := range 4 {
+				acc[4*w+l] += int32(lanes[w]>>(16*l)&0xFFFF) - chunk
+			}
+			lanes[w] = 0
+		}
+		chunk = 0
+	}
 	for tok := range bytes.FieldsSeq(text) {
 		f := uint64(offset64)
 		for _, c := range tok {
 			f = (f ^ uint64(c)) * prime64
 		}
-		for b := range 64 {
-			// Branchless vote: bit set adds +1, clear adds -1.
-			acc[b] += int32(f>>b&1)*2 - 1
+		for w := range lanes {
+			lanes[w] += nibSpread[f>>(4*w)&0xF]
+		}
+		if chunk++; chunk == 32000 {
+			flush()
 		}
 	}
+	flush()
 	var out uint64
 	for b := range 64 {
 		if acc[b] > 0 {
@@ -378,6 +413,16 @@ func simhash(text []byte) uint64 {
 	}
 	return out
 }
+
+// nibSpread[n] spreads nibble n across four 16-bit lanes, 2 per set bit.
+var nibSpread = func() (t [16]uint64) {
+	for n := range t {
+		for l := range 4 {
+			t[n] |= uint64(n>>l&1) * 2 << (16 * l)
+		}
+	}
+	return
+}()
 
 // readWARC walks WARC/1.0 records: header lines to a blank line, then
 // Content-Length payload bytes, then a blank separator.
