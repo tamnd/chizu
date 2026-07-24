@@ -18,10 +18,11 @@ import (
 // block (P5: 3.3-4.8x the MB/s of 4 KiB at no worse than 1.3x p50).
 // Depth 32 is the knee of the measured scaling curve: cold IOPS grow
 // 29x from depth 1 to 32 with flat p50, and depth 64 pays 1.54x p50
-// for its extra throughput. MaxSpeculative caps read-ahead the
-// traversal may add to a needed frontier at 1x, because equal extras
-// ride the same concurrent window for +24.5% time-to-needed while 2x
-// extras cost +84%. The 3ms cold-batch budget from doc 01's NVMe
+// for its extra throughput. MaxSpeculative is 0: the quiet re-run
+// re-judged the waste arm at +55% time-to-needed p50 for 1x extras
+// (the contended +24.5% was a slow baseline hiding them), which fires
+// the prediction's conservative branch; speculation waits for a
+// governor-driven case. The 3ms cold-batch budget from doc 01's NVMe
 // envelope did not survive the virtio disk (P3: 19.6ms p50 for a cold
 // 32-block batch); latency budgeting belongs to the governor against
 // measured rows, not to a constant here.
@@ -29,7 +30,7 @@ const (
 	ReadUnit         = 16 << 10
 	DefaultReadDepth = 32
 	DefaultBatchSize = 32
-	MaxSpeculative   = 1
+	MaxSpeculative   = 0
 )
 
 // maxOutstanding bounds reads issued but not yet handed back through
