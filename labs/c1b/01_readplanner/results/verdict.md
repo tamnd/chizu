@@ -18,3 +18,25 @@ The user ordered the run under contention rather than waiting for a quiet window
 1. io_uring stays a road not taken: P2's 29x depth scaling plus P1's flat 3µs p50 say goroutine-pread reaches device queue depth at negligible overhead. Nothing here reopens doc 01 section 10.
 2. The read-planner slice (held branch slice/c1b-readplanner) lands with pread + depth-32 pools, 16 KiB units, speculative extras capped at 1x needed, and a batch latency budget derived from this table, not from doc 01 paper numbers.
 3. PRED box tick is deferred on the P1 p999 clause alone; the quiet hot-arm re-run is ~2 minutes and rides the next quiet window. Every other row either binds now or is device-bound enough that contention does not change the verdict.
+
+## Addendum: the quiet re-run (2026-07-24, results/quiet.tsv)
+
+The window opened when arctic-duckdb finished; the header records load 3.18 and the hot arm ran first, so its rows are the quiet ones this addendum exists for.
+
+P1 judged, and it misses for real.
+The p50 clause passes everywhere: 2.5-3.8µs through depth 32, microsecond-class per-op overhead confirmed.
+The p999 clause fails everywhere: 96.3µs at depth 1 against the 50µs bar, rising to 340.9µs at depth 8, 3.05ms at 16 and 9.49ms at 32.
+Two mechanisms, both named: at low depth the tail is hypervisor steal on a shared VPS (a page-cache pread has no device in the loop and still spikes to ~100µs about once per thousand ops); past 8 issuing goroutines on 8 cores the tail is runqueue wait, growing roughly linearly with depth beyond cores.
+The PRED box stays unticked per the frozen rule (P1 and P2 must both hold), and per the same rule io_uring reopens only if Q1 also misses downstream; nothing reopens today because P2 is emphatic.
+
+P2 re-confirmed quiet and better: cold 4 KiB scales 588 to 20,488 reads/s from depth 1 to 32 (34.8x against the 8x bar), plateau confirmed at depth 64 (20,430; p50 1.68x, inside the 2x clause).
+Depth 32 stands as the knee.
+
+P3 still misses quiet: a 32-block 16 KiB batch at depth 16 lands p50 5.56ms, p999 35.6ms against the 3ms/10ms bars.
+Better than the contended 19.6ms, still nowhere near the paper NVMe envelope; the decision (no batch constant, governor owns budgets) already reflects this.
+
+P4 flips from pass to miss, and the contended pass was the artifact: quiet base p50 is 4,297µs and +32 extras cost 6,660µs, +55% against the 25% bar (the contended run's slow 6,364µs baseline hid the extras inside its own noise).
+The conservative branch fires: MaxSpeculative drops 1 to 0 in serve/planner.go in this PR, and speculation returns only if the governor ever demonstrates a case for it.
+
+P5 holds: 16 KiB delivers 3.4-3.9x the MB/s of 4 KiB at depths 8/16/64 within the p50 clause; the depth-32 row reads 2.2x because 4 KiB saturates its IOPS ceiling exactly there (20.5k at both 32 and 64).
+The read unit stands.
