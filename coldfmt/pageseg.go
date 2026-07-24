@@ -4,8 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-
-	"github.com/klauspost/compress/dict"
 )
 
 // Page segments, doc 04 section 3: one row group of pages in
@@ -86,13 +84,17 @@ const pageNCols = 15
 
 // pageColWant is the compression each column asks for; appendBlock falls
 // back to stored whenever zstd does not pay, which is how fixed-width
-// columns end up comp 0.
+// columns end up comp 0. The zstd-dict lab (labs/c2/01_zstddict, server3
+// verdict) retired per-segment dictionaries: at 16 MiB blocks the best
+// dictionary arm gained 0.09% on real Common Crawl text, so title, text
+// and outlinks write plain zstd. CompZstdDict stays a valid comp byte and
+// the reader path keeps serving segments that carry a dictionary.
 var pageColWant = [pageNCols]byte{
-	1:  CompZstd,     // url
-	9:  CompZstd,     // hdr
-	10: CompZstdDict, // title
-	11: CompZstdDict, // text
-	12: CompZstdDict, // outlinks
+	1:  CompZstd, // url
+	9:  CompZstd, // hdr
+	10: CompZstd, // title
+	11: CompZstd, // text
+	12: CompZstd, // outlinks
 }
 
 // PageSegmentWriter accumulates rows and seals them into one segment.
@@ -134,7 +136,7 @@ func (w *PageSegmentWriter) Seal() ([]byte, error) {
 		}
 	}
 
-	codec, err := newBlockCodec(w.trainDict())
+	codec, err := newBlockCodec(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -173,57 +175,14 @@ func (w *PageSegmentWriter) Seal() ([]byte, error) {
 		flush(len(w.rows))
 	}
 
+	// The dictionary slot stays in the layout with zero length; readers
+	// of older segments still find theirs here.
 	dictOff := uint64(len(out))
-	dictBytes := codecDict(codec)
-	out = append(out, dictBytes...)
 
 	footerOff := uint64(len(out))
-	footer := w.encodeFooter(index[:], dictOff, uint32(len(dictBytes)))
+	footer := w.encodeFooter(index[:], dictOff, 0)
 	out = append(out, footer...)
 	return AppendTail(out, footerOff, uint32(len(footer))), nil
-}
-
-// codecDict returns the dictionary the codec was built with, empty when
-// training was skipped.
-func codecDict(c *blockCodec) []byte { return c.dict }
-
-// trainDict trains the 64 KiB shared dictionary on the text column. Small
-// or degenerate corpora fail training, and that is fine: the segment then
-// carries no dictionary and the dict columns fall back to plain zstd.
-// The builder also panics outright on inputs it dislikes (seen on real
-// Common Crawl text by the zstd-dict lab, slice bounds out of range in
-// v1.19.0), so a failed build is caught either way.
-func (w *PageSegmentWriter) trainDict() (d []byte) {
-	defer func() {
-		if recover() != nil {
-			d = nil
-		}
-	}()
-	return w.trainDictInner()
-}
-
-func (w *PageSegmentWriter) trainDictInner() []byte {
-	var samples [][]byte
-	for i := range w.rows {
-		if t := w.rows[i].Text; t != "" {
-			samples = append(samples, []byte(t))
-		}
-		if len(samples) == 1024 {
-			break
-		}
-	}
-	if len(samples) < 8 {
-		return nil
-	}
-	d, err := dict.BuildZstdDict(samples, dict.Options{
-		MaxDictSize: DictSize,
-		HashBytes:   6,
-		ZstdDictID:  0x7A04,
-	})
-	if err != nil {
-		return nil
-	}
-	return d
 }
 
 // appendPageCell appends row i's cell for one column. fetch_ms is

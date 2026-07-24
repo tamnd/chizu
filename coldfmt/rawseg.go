@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-
-	"github.com/klauspost/compress/dict"
 )
 
 // Raw HTML segments, doc 04 section 4: the page segment's block-and-footer
@@ -61,7 +59,10 @@ func (w *RawSegmentWriter) Seal() ([]byte, error) {
 		return nil, fmt.Errorf("coldfmt: raw stream %d bytes exceeds u32 addressing", w.total)
 	}
 
-	codec, err := newBlockCodec(w.trainDict())
+	// Plain zstd, no per-segment dictionary: the zstd-dict lab's server3
+	// verdict retired training at 16 MiB blocks (0.09% gain on real CC
+	// text) and raw HTML blocks carry even more in-window redundancy.
+	codec, err := newBlockCodec(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +79,7 @@ func (w *RawSegmentWriter) Seal() ([]byte, error) {
 	flush := func(end int) {
 		offset := uint64(len(out))
 		var storedlen uint32
-		out, storedlen = codec.appendBlock(out, buf, CompZstdDict)
+		out, storedlen = codec.appendBlock(out, buf, CompZstd)
 		index = append(index, blockEntry{
 			offset:    offset,
 			storedlen: storedlen,
@@ -96,38 +97,13 @@ func (w *RawSegmentWriter) Seal() ([]byte, error) {
 	}
 	flush(len(w.html))
 
+	// Dictionary slot kept at zero length, same as page segments.
 	dictOff := uint64(len(out))
-	dictBytes := codecDict(codec)
-	out = append(out, dictBytes...)
 
 	footerOff := uint64(len(out))
-	footer := w.encodeFooter(index, dictOff, uint32(len(dictBytes)))
+	footer := w.encodeFooter(index, dictOff, 0)
 	out = append(out, footer...)
 	return AppendTail(out, footerOff, uint32(len(footer))), nil
-}
-
-func (w *RawSegmentWriter) trainDict() []byte {
-	var samples [][]byte
-	for _, h := range w.html {
-		if len(h) > 0 {
-			samples = append(samples, h)
-		}
-		if len(samples) == 1024 {
-			break
-		}
-	}
-	if len(samples) < 8 {
-		return nil
-	}
-	d, err := dict.BuildZstdDict(samples, dict.Options{
-		MaxDictSize: DictSize,
-		HashBytes:   6,
-		ZstdDictID:  uint32(FormatRawHTML),
-	})
-	if err != nil {
-		return nil
-	}
-	return d
 }
 
 func (w *RawSegmentWriter) encodeFooter(index []blockEntry, dictOff uint64, dictLen uint32) []byte {

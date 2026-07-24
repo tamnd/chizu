@@ -126,7 +126,11 @@ func TestPageSegmentMultiBlock(t *testing.T) {
 	}
 }
 
-func TestPageSegmentDictionaryPays(t *testing.T) {
+func TestPageSegmentPlainZstd(t *testing.T) {
+	// The zstd-dict lab's server3 verdict retired per-segment training:
+	// segments write no dictionary and the text column compresses with
+	// plain zstd. The dictionary slot stays in the layout at zero length
+	// so readers keep serving older segments that carry one.
 	rows := testCorpus(500)
 	data := sealCorpus(t, rows, 0)
 	s, err := OpenPageSegment(data)
@@ -134,13 +138,13 @@ func TestPageSegmentDictionaryPays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if len(s.codec.dict) == 0 {
-		t.Fatal("no dictionary trained on a 500-row prose corpus")
+	if len(s.codec.dict) != 0 {
+		t.Fatalf("segment carries a %d-byte dictionary, want none", len(s.codec.dict))
 	}
 	// The text column must actually compress: stored would be comp 0.
 	b := s.index[11][0]
-	if comp := s.data[b.offset+8]; comp != CompZstdDict {
-		t.Fatalf("text block comp %d, want zstd-dict", comp)
+	if comp := s.data[b.offset+8]; comp != CompZstd {
+		t.Fatalf("text block comp %d, want plain zstd", comp)
 	}
 	if b.storedlen >= b.rawlen {
 		t.Fatalf("text block did not shrink: %d stored, %d raw", b.storedlen, b.rawlen)
