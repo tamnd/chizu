@@ -1,0 +1,10 @@
+# 2026-07-24T10:54:40Z load: 45.25 18.41 10.87 3/404 3202130
+label	col	dict	level	blocks	pages	rawMB	storedMB	ratio	bPerPage	encMBps	decMBps	trainMS
+server3	text	none	1	20	40624	312.8	113.3	0.3621	2924	90	197	0
+server3	text	none	3	20	40624	312.8	105.4	0.3368	2719	66	313	0
+server3	text	raw	1	20	40624	312.8	113.3	0.3621	2923	102	212	0
+server3	text	raw	3	20	40624	312.8	105.3	0.3367	2719	61	185	0
+server3	outlinks	none	1	14	40073	213.2	114.8	0.5388	3005	121	689	0
+server3	outlinks	none	3	14	40073	213.2	108.2	0.5075	2831	69	597	0
+server3	outlinks	raw	1	14	40073	213.2	114.8	0.5386	3004	115	436	0
+server3	outlinks	raw	3	14	40073	213.2	108.2	0.5075	2831	65	397	0

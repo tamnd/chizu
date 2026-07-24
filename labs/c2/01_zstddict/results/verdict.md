@@ -21,3 +21,12 @@ The verdict below stands without it, for reasons given, and the upstream issue i
 The best available dictionary arm gains under 5% on both columns, so doc 04's text and outlinks columns flip to plain zstd (comp 1), per-segment dictionary training leaves the cold write path, and the comp-2 byte stays reserved in the format.
 The decision reopens only if a fixed upstream trainer shows a 5%+ gain on either column, which the window argument makes unlikely.
 Immediate beneficiary: the importer's encode stage, whose Seal currently pays for dictionary training the corpus does not reward (see the importer verdict).
+
+## Addendum: P4 decode, two re-runs, binding under disclosure (2026-07-24)
+
+The deferred clause was decode throughput: >=400 MB/s for level 3 text.
+Two re-runs happened (results/quiet1.tsv, quiet2.tsv) and neither got a clean box: the first inherited the governor lab's thread wall in its header (load 45.25 at stamp, decaying), the second was overrun mid-chain by an sqlo1 corpus run plus ccrawl (load 27.91 and rising; its encode rates collapsed 3x and it is kept for header discipline only).
+The first re-run's decode rows still concord with the original contended run: 313 MB/s for no-dict level 3 text there, 306 originally, 208 in the overrun run.
+Judgment: P4 MISS, working number ~310 MB/s on server3 for level 3 text under recorded contention, against the 400 bar.
+Nothing structural hinges on it (dictionaries are off via P2; level 3 keeps the default via the 7.0% ratio row), but doc 04's read-path arithmetic should budget ~310 MB/s/core decode until a genuinely quiet row says otherwise.
+Level 1 remains the escape hatch if decode ever becomes the serving wall: 197 MB/s vs 313 at level 3 in the same rows says it is not one today.
