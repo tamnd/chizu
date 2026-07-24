@@ -37,6 +37,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chizu:", err)
 			os.Exit(1)
 		}
+	case "import":
+		if err := importCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chizu:", err)
+			os.Exit(1)
+		}
 	case "fixture":
 		if err := fixtureCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chizu:", err)
@@ -60,7 +65,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: chizu <command>")
-	fmt.Fprintln(os.Stderr, "commands: version, admin create, dev, fixture, serve, replay")
+	fmt.Fprintln(os.Stderr, "commands: version, admin create, dev, import, fixture, serve, replay")
 	fmt.Fprintln(os.Stderr, "more arrive milestone by milestone")
 }
 
