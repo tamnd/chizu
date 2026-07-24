@@ -1,0 +1,6 @@
+# 2026-07-24T11:15:00Z load: 13.77 19.34 14.61 16/375 3235696
+label	stage	files	pages	rawMB	wallS	usPerPage	pagesPerS
+server3	parse	2	40624	312.7	4.79	117.9	8480
+server3	canon	2	40624	312.7	6.52	160.6	6226
+server3	hash	2	40624	312.7	12.42	305.7	3271
+server3	encode	2	40624	312.7	24.45	601.8	1662
